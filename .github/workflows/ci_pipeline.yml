@@ -38,3 +38,36 @@ jobs:
         run: |
           go generate ./...
           go test ./pkg/... ./internal/... --tags=postgres
+
+  verify-examples:
+    name: Run all examples and verify they succeed
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - sync-pull-dataplane
+          - streaming-pull-dataplane
+          - streaming-push-dataplane
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go env
+        run: |
+          go env
+          go version
+
+      - name: Run example
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          go build .
+          go run .
+    
+     
+      

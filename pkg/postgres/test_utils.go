@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/docker/go-connections/nat"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -16,7 +17,12 @@ func setupTestContainer(t *testing.T) (testcontainers.Container, string) {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:15-alpine",
 		ExposedPorts: []string{"5432/tcp"},
-		WaitingFor:   wait.ForListeningPort("5432/tcp"),
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("5432/tcp"),
+			wait.ForSQL("5432/tcp", "postgres", func(host string, port nat.Port) string {
+				return fmt.Sprintf("postgres://test:test@%s:%s/testdb?sslmode=disable", host, port.Port())
+			}),
+		),
 		Env: map[string]string{
 			"POSTGRES_DB":       "testdb",
 			"POSTGRES_USER":     "test",

@@ -40,7 +40,7 @@ jobs:
           go test ./pkg/... ./internal/... --tags=postgres
 
   verify-examples:
-    name: Run all examples and verify they succeed
+    name: Run example ${{ matrix.example }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,4 +70,3 @@ jobs:
           go run .
     
      
-      

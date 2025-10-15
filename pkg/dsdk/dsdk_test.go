@@ -660,6 +660,113 @@ func Test_DataPlaneSDK_Suspend_SdkCallbackError(t *testing.T) {
 	assert.ErrorContains(t, err, "some error")
 }
 
+func Test_DataPlaneSDK_Completed(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onComplete: func(ctx context.Context, flow *DataFlow) error {
+			return nil
+		},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
+		ID:    "flow123",
+		State: Started, // already suspended
+	}, nil)
+	store.EXPECT().Save(ctx, mock.MatchedBy(func(df *DataFlow) bool {
+		return df.State == Completed
+	})).Return(nil)
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.NoError(t, err)
+}
+
+func Test_DataPlaneSDK_Completed_AlreadyCompleted(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
+		ID:    "flow123",
+		State: Completed, // already suspended
+	}, nil)
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.NoError(t, err)
+}
+
+func Test_DataPlaneSDK_Completed_SdkError(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onComplete: func(ctx context.Context, flow *DataFlow) error {
+			return fmt.Errorf("some error")
+		},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
+		ID:    "flow123",
+		State: Started, // already suspended
+	}, nil)
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.ErrorContains(t, err, "some error")
+}
+
+func Test_DataPlaneSDK_Completed_WrongState(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onComplete: func(ctx context.Context, flow *DataFlow) error {
+			return nil
+		},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
+		ID:    "flow123",
+		State: Terminated,
+	}, nil)
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.ErrorIs(t, err, ErrInvalidTransition)
+}
+
+func Test_DataPlaneSDK_NotFound(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onComplete: func(ctx context.Context, flow *DataFlow) error {
+			return nil
+		},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(nil, ErrNotFound)
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func createPrepareMessage() DataFlowPrepareMessage {
 	return DataFlowPrepareMessage{DataFlowBaseMessage: createBaseMessage()}
 }

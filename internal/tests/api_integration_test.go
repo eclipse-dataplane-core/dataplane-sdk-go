@@ -52,6 +52,11 @@ func newServerWithSdk(t *testing.T, sdk *dsdk.DataPlaneSDK) http.Handler {
 		id := chi.URLParam(request, "id")
 		sdkApi.Status(id, writer, request)
 	})
+
+	r.Post("/dataflows/{id}/completed", func(writer http.ResponseWriter, request *http.Request) {
+		id := chi.URLParam(request, "id")
+		sdkApi.Complete(id, writer, request)
+	})
 	return r
 }
 
@@ -368,6 +373,51 @@ func Test_Terminate_WhenNotFound(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func Test_Complete(t *testing.T) {
+	id := uuid.New().String()
+	flow, err := newFlowBuilder().ID(id).State(dsdk.Started).Build()
+	assert.NoError(t, err)
+	store := postgres.NewStore(database)
+	err = store.Create(ctx, flow)
+	assert.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/"+flow.ID+"/completed", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	byId, err := store.FindById(ctx, id)
+	assert.NoError(t, err)
+	assert.Equal(t, dsdk.Completed, byId.State)
+}
+
+func Test_Complete_NotFound(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/not-exist/completed", strings.NewReader(""))
+	assert.NoError(t, err)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func Test_Complete_WrongState(t *testing.T) {
+	id := uuid.New().String()
+	flow, err := newFlowBuilder().ID(id).State(dsdk.Terminated).Build()
+	assert.NoError(t, err)
+	store := postgres.NewStore(database)
+	err = store.Create(ctx, flow)
+	assert.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/"+flow.ID+"/completed", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	byId, err := store.FindById(ctx, id)
+	assert.NoError(t, err)
+	assert.NotEqual(t, dsdk.Completed, byId.State)
 }
 
 func Test_GetStatus(t *testing.T) {

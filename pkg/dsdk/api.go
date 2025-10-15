@@ -218,6 +218,19 @@ func (d *DataPlaneApi) Status(processID string, w http.ResponseWriter, r *http.R
 	d.writeResponse(w, http.StatusOK, response)
 }
 
+func (d *DataPlaneApi) Complete(processID string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid request method", http.StatusBadRequest)
+		return
+	}
+	err := d.sdk.Complete(r.Context(), processID)
+	if err != nil {
+		d.handleError(err, w)
+		return
+	}
+	d.writeResponse(w, http.StatusOK, nil)
+}
+
 func (d *DataPlaneApi) decodingError(w http.ResponseWriter, err error) {
 	id := uuid.NewString()
 	d.sdk.Monitor.Printf("Error decoding flow [%s]: %v\n", id, err)

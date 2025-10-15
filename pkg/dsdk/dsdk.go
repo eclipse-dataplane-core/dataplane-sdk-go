@@ -32,6 +32,7 @@ type DataPlaneSDK struct {
 	onStart     DataFlowProcessor
 	onTerminate DataFlowHandler
 	onSuspend   DataFlowHandler
+	onComplete  DataFlowHandler
 }
 
 // Prepare is called on the consumer to prepare for receiving data.
@@ -262,6 +263,38 @@ func (dsdk *DataPlaneSDK) Status(ctx context.Context, id string) (*DataFlow, err
 	return flow, err
 }
 
+func (dsdk *DataPlaneSDK) Complete(ctx context.Context, dataflowID string) error {
+	if dataflowID == "" {
+		return errors.New("processID cannot be empty")
+	}
+
+	return dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, dataflowID)
+		if err != nil {
+			return fmt.Errorf("completing data flow %s: %w", dataflowID, err)
+		}
+
+		if flow.State == Completed { // de-duplication
+			return nil
+		}
+
+		transitionError := flow.TransitionToCompleted()
+		if transitionError != nil {
+			return transitionError
+		}
+		// only invoked if the transition was successful
+		e := dsdk.onComplete(ctx, flow)
+		if e != nil {
+			return e
+		}
+		storeErr := dsdk.Store.Save(ctx, flow)
+		if err != nil {
+			return fmt.Errorf("completing data flow %s: %w", flow.ID, storeErr)
+		}
+		return nil
+	})
+}
+
 func (dsdk *DataPlaneSDK) startExistingFlow(ctx context.Context, flow *DataFlow, sourceAddress *DataAddress) (*DataFlowResponseMessage, error) {
 	switch {
 	case flow != nil && (flow.State == Starting || flow.State == Started):
@@ -422,7 +455,11 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 			return nil
 		}
 	}
-
+	if sdk.onComplete == nil {
+		sdk.onComplete = func(context context.Context, flow *DataFlow) error {
+			return nil
+		}
+	}
 	return sdk, nil
 }
 

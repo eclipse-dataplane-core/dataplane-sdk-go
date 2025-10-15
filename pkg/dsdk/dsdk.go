@@ -137,7 +137,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 			if err != nil {
 				return fmt.Errorf("creating data flow: %w", err)
 			}
-			response, err = dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: &message.DataAddress})
+			response, err = dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: message.DataAddress})
 			if err != nil {
 				return fmt.Errorf("processing data flow: %w", err)
 			}
@@ -153,7 +153,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 			return nil
 		}
 
-		response, err = dsdk.startExistingFlow(ctx, flow, &message.DataAddress)
+		response, err = dsdk.startExistingFlow(ctx, flow, message.DataAddress)
 		return err
 	})
 

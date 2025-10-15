@@ -63,8 +63,8 @@ func (c *ControlPlaneSimulator) ProviderStart(ctx context.Context,
 			ParticipantID:    "did:web:provider.com",
 			CallbackAddress:  dsdk.CallbackURL(*callbackURL),
 			TransferType:     dsdk.TransferType{DestinationType: "custom", FlowType: dsdk.Pull},
+			DataAddress:      da,
 		},
-		SourceDataAddress: da,
 	}
 
 	serialized, err := json.Marshal(startMessage)
@@ -115,8 +115,8 @@ func (c *ControlPlaneSimulator) ConsumerStart(ctx context.Context, processID str
 			CounterPartyID:   "did:web:provider.com",
 			CallbackAddress:  dsdk.CallbackURL(*callbackURL),
 			TransferType:     dsdk.TransferType{DestinationType: "custom", FlowType: dsdk.Pull},
+			DataAddress:      source,
 		},
-		SourceDataAddress: source,
 	}
 
 	serialized, err := json.Marshal(startMessage)

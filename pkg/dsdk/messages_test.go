@@ -95,6 +95,6 @@ func newBaseMessage() DataFlowBaseMessage {
 			DestinationType: "test-type",
 			FlowType:        "pull",
 		},
-		DataAddress: DataAddress{},
+		DataAddress: &DataAddress{},
 	}
 }

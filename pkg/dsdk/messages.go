@@ -16,7 +16,7 @@ type DataFlowBaseMessage struct {
 	DatasetID        string       `json:"datasetID"`
 	CallbackAddress  CallbackURL  `json:"callbackAddress" validate:"required,callback-url"`
 	TransferType     TransferType `json:"transferType" validate:"required"`
-	DataAddress      DataAddress  `json:"dataAddress" validate:"required"`
+	DataAddress      *DataAddress `json:"dataAddress"`
 }
 
 func (d *DataFlowBaseMessage) Validate() error {

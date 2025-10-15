@@ -789,7 +789,7 @@ func createBaseMessage() DataFlowBaseMessage {
 			DestinationType: "test-type",
 			FlowType:        Pull,
 		},
-		DataAddress: DataAddress{},
+		DataAddress: &DataAddress{},
 	}
 }
 func createStartByIdMessage() DataFlowStartedNotificationMessage {

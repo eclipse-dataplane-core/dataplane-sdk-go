@@ -476,7 +476,7 @@ func newStartMessage() dsdk.DataFlowStartMessage {
 			DatasetID:        uuid.New().String(),
 			CallbackAddress:  newCallback(),
 			TransferType:     newTransferType(),
-			DataAddress: dsdk.DataAddress{
+			DataAddress: &dsdk.DataAddress{
 				Properties: map[string]any{
 					"foo": "bar",
 				},
@@ -514,7 +514,7 @@ func newPrepareMessage() dsdk.DataFlowPrepareMessage {
 			DatasetID:        uuid.New().String(),
 			CallbackAddress:  newCallback(),
 			TransferType:     newTransferType(),
-			DataAddress:      dsdk.DataAddress{},
+			DataAddress:      &dsdk.DataAddress{},
 		},
 	}
 }

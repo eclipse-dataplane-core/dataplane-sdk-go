@@ -28,7 +28,7 @@ func Test_dataFlowStartSerialize(t *testing.T) {
 				DestinationType: "PULL",
 				FlowType:        FlowType("PULL"),
 			},
-			DataAddress: *build,
+			DataAddress: build,
 		},
 	}
 

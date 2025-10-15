@@ -44,7 +44,7 @@ func Test_dataFlowStartSerialize(t *testing.T) {
 	assert.Equal(t, original.AgreementID, decoded.AgreementID, "AgreementID should be equal")
 	assert.Equal(t, original.CallbackAddress, decoded.CallbackAddress, "CallbackAddress should be equal")
 	assert.Equal(t, original.TransferType, decoded.TransferType, "TransferType should be equal")
-	assert.Equal(t, original.SourceDataAddress, decoded.SourceDataAddress, "SourceDataAddress should be equal")
+	assert.Equal(t, original.SourceDataAddress, decoded.SourceDataAddress, "DataAddress should be equal")
 	assert.Equal(t, original, original)
 }
 

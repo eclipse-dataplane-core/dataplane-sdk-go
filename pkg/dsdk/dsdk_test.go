@@ -212,6 +212,99 @@ func Test_DataPlaneSDK_Start_ConsumerPrepared(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func Test_DataPlaneSDK_StartById_Exists(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
+			return &DataFlowResponseMessage{State: Started}, nil
+		},
+	}
+	ctx := context.Background()
+	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
+		ID:       "process123",
+		State:    Prepared,
+		Consumer: true,
+	}, nil)
+	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
+
+	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
+	assert.NoError(t, err)
+	assert.Equal(t, r.State, Started)
+}
+
+func Test_DataPlaneSDK_StartById_NotExists(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+	}
+	ctx := context.Background()
+	store.EXPECT().FindById(ctx, "process123").Return(nil, ErrNotFound)
+
+	_, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func Test_DataPlaneSDK_StartById_NotConsumer(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+	}
+	ctx := context.Background()
+	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
+		ID:       "process123",
+		State:    Prepared,
+		Consumer: false,
+	}, nil)
+
+	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Nil(t, r)
+}
+
+func Test_DataPlaneSDK_StartById_WrongState(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+	}
+	ctx := context.Background()
+	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
+		ID:       "process123",
+		State:    Uninitialized,
+		Consumer: true,
+	}, nil)
+
+	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
+	assert.ErrorIs(t, err, ErrInvalidTransition)
+	assert.Nil(t, r)
+}
+
+func Test_DataPlaneSDK_StartById_AlreadyStarted(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
+			return &DataFlowResponseMessage{State: Started}, nil
+		},
+	}
+	ctx := context.Background()
+	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
+		ID:       "process123",
+		State:    Started,
+		Consumer: true,
+	}, nil)
+	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
+
+	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
+	assert.NoError(t, err)
+	assert.Equal(t, r.State, Started)
+}
+
 func Test_DataPlaneSDK_Status(t *testing.T) {
 	store := NewMockDataplaneStore(t)
 	dsdk := DataPlaneSDK{
@@ -591,6 +684,11 @@ func createBaseMessage() DataFlowBaseMessage {
 			FlowType:        Pull,
 		},
 		DestinationDataAddress: DataAddress{},
+	}
+}
+func createStartByIdMessage() DataFlowStartByIdMessage {
+	return DataFlowStartByIdMessage{
+		DataAddress: &DataAddress{},
 	}
 }
 

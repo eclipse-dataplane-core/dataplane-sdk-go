@@ -433,7 +433,7 @@ func newStartMessage() dsdk.DataFlowStartMessage {
 
 func newStartByIdMessage() dsdk.DataFlowStartByIdMessage {
 	return dsdk.DataFlowStartByIdMessage{
-		SourceDataAddress: &dsdk.DataAddress{
+		DataAddress: &dsdk.DataAddress{
 			Properties: map[string]any{
 				"foo": "bar",
 			},

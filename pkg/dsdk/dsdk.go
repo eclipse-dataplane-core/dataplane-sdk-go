@@ -173,7 +173,11 @@ func (dsdk *DataPlaneSDK) StartById(ctx context.Context, processID string, messa
 			return ErrNotFound
 		}
 
-		response, err = dsdk.startExistingFlow(ctx, existingFlow, message.SourceDataAddress)
+		if !existingFlow.Consumer {
+			return fmt.Errorf("%w: startById is only valid for consumer data flows", ErrInvalidInput)
+		}
+
+		response, err = dsdk.startExistingFlow(ctx, existingFlow, message.DataAddress)
 		return err
 
 	})

@@ -28,9 +28,8 @@ func Test_dataFlowStartSerialize(t *testing.T) {
 				DestinationType: "PULL",
 				FlowType:        FlowType("PULL"),
 			},
-			DestinationDataAddress: *build,
+			DataAddress: *build,
 		},
-		SourceDataAddress: build,
 	}
 
 	jsonData, err := json.Marshal(original)
@@ -44,7 +43,7 @@ func Test_dataFlowStartSerialize(t *testing.T) {
 	assert.Equal(t, original.AgreementID, decoded.AgreementID, "AgreementID should be equal")
 	assert.Equal(t, original.CallbackAddress, decoded.CallbackAddress, "CallbackAddress should be equal")
 	assert.Equal(t, original.TransferType, decoded.TransferType, "TransferType should be equal")
-	assert.Equal(t, original.SourceDataAddress, decoded.SourceDataAddress, "DataAddress should be equal")
+	assert.Equal(t, original.DataAddress, decoded.DataAddress, "DataAddress should be equal")
 	assert.Equal(t, original, original)
 }
 

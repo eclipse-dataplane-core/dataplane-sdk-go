@@ -39,7 +39,7 @@ func Test_Message_InvalidTransferType(t *testing.T) {
 
 func Test_StartMessage_Success(t *testing.T) {
 	msg := newBaseMessage()
-	startMsg := DataFlowStartMessage{DataFlowBaseMessage: msg, SourceDataAddress: &DataAddress{}}
+	startMsg := DataFlowStartMessage{DataFlowBaseMessage: msg}
 	err := startMsg.Validate()
 	assert.NoError(t, err)
 }
@@ -95,6 +95,6 @@ func newBaseMessage() DataFlowBaseMessage {
 			DestinationType: "test-type",
 			FlowType:        "pull",
 		},
-		DestinationDataAddress: DataAddress{},
+		DataAddress: DataAddress{},
 	}
 }

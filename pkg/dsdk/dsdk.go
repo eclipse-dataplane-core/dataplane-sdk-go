@@ -12,8 +12,8 @@ import (
 type DataFlowProcessor func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error)
 
 type ProcessorOptions struct {
-	Duplicate         bool
-	SourceDataAddress *DataAddress
+	Duplicate   bool
+	DataAddress *DataAddress
 }
 
 type DataFlowHandler func(context.Context, *DataFlow) error
@@ -136,7 +136,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 			if err != nil {
 				return fmt.Errorf("creating data flow: %w", err)
 			}
-			response, err = dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{SourceDataAddress: message.SourceDataAddress})
+			response, err = dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: &message.DataAddress})
 			if err != nil {
 				return fmt.Errorf("processing data flow: %w", err)
 			}
@@ -152,7 +152,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 			return nil
 		}
 
-		response, err = dsdk.startExistingFlow(ctx, flow, message.SourceDataAddress)
+		response, err = dsdk.startExistingFlow(ctx, flow, &message.DataAddress)
 		return err
 	})
 
@@ -160,7 +160,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 
 }
 
-func (dsdk *DataPlaneSDK) StartById(ctx context.Context, processID string, message DataFlowStartByIdMessage) (*DataFlowResponseMessage, error) {
+func (dsdk *DataPlaneSDK) StartById(ctx context.Context, processID string, message DataFlowStartedNotificationMessage) (*DataFlowResponseMessage, error) {
 	var response *DataFlowResponseMessage
 
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
@@ -266,7 +266,7 @@ func (dsdk *DataPlaneSDK) startExistingFlow(ctx context.Context, flow *DataFlow,
 	switch {
 	case flow != nil && (flow.State == Starting || flow.State == Started):
 		// duplicate message, pass to handler to generate a data address if needed
-		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{Duplicate: true, SourceDataAddress: sourceAddress})
+		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{Duplicate: true, DataAddress: sourceAddress})
 		if err != nil {
 			return nil, fmt.Errorf("processing data flow: %w", err)
 		}
@@ -282,7 +282,7 @@ func (dsdk *DataPlaneSDK) startExistingFlow(ctx context.Context, flow *DataFlow,
 		return response, err
 	case flow != nil && flow.Consumer && flow.State == Prepared:
 		// consumer side, process
-		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{SourceDataAddress: sourceAddress})
+		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: sourceAddress})
 		if err != nil {
 			return nil, fmt.Errorf("processing data flow: %w", err)
 		}

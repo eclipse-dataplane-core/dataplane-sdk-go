@@ -131,7 +131,7 @@ func Test_StartByID_WhenStartedOrStarting(t *testing.T) {
 	for _, state := range states {
 		id := uuid.New().String()
 		store := postgres.NewStore(database)
-		flow, err := newFlowBuilder().ID(id).State(state).Build()
+		flow, err := newFlowBuilder().ID(id).State(state).Consumer(true).Build()
 		assert.NoError(t, err)
 		assert.NoError(t, store.Create(ctx, flow))
 
@@ -196,16 +196,21 @@ func Test_StartByID_WhenPrepared(t *testing.T) {
 }
 
 func Test_StartByID_MissingSourceAddress(t *testing.T) {
-	requestBody, err := serialize(dsdk.DataFlowStartByIdMessage{})
+	id := uuid.New().String()
+	store := postgres.NewStore(database)
+	flow, err := newFlowBuilder().ID(id).State(dsdk.Prepared).Consumer(true).Build()
+	assert.NoError(t, err)
+	assert.NoError(t, store.Create(ctx, flow))
+	requestBody, err := serialize(dsdk.DataFlowStartedNotificationMessage{})
 	assert.NoError(t, err)
 
-	req, err := http.NewRequest(http.MethodPost, "/dataflows/some-id/started", bytes.NewBuffer(requestBody))
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/"+flow.ID+"/started", bytes.NewBuffer(requestBody))
 	assert.NoError(t, err)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
 func Test_Prepare(t *testing.T) {
@@ -412,27 +417,26 @@ func serialize(obj any) ([]byte, error) {
 func newStartMessage() dsdk.DataFlowStartMessage {
 	return dsdk.DataFlowStartMessage{
 		DataFlowBaseMessage: dsdk.DataFlowBaseMessage{
-			MessageID:              uuid.New().String(),
-			ParticipantID:          uuid.New().String(),
-			CounterPartyID:         uuid.New().String(),
-			DataspaceContext:       uuid.New().String(),
-			ProcessID:              uuid.New().String(),
-			AgreementID:            uuid.New().String(),
-			DatasetID:              uuid.New().String(),
-			CallbackAddress:        newCallback(),
-			TransferType:           newTransferType(),
-			DestinationDataAddress: dsdk.DataAddress{},
-		},
-		SourceDataAddress: &dsdk.DataAddress{
-			Properties: map[string]any{
-				"foo": "bar",
+			MessageID:        uuid.New().String(),
+			ParticipantID:    uuid.New().String(),
+			CounterPartyID:   uuid.New().String(),
+			DataspaceContext: uuid.New().String(),
+			ProcessID:        uuid.New().String(),
+			AgreementID:      uuid.New().String(),
+			DatasetID:        uuid.New().String(),
+			CallbackAddress:  newCallback(),
+			TransferType:     newTransferType(),
+			DataAddress: dsdk.DataAddress{
+				Properties: map[string]any{
+					"foo": "bar",
+				},
 			},
 		},
 	}
 }
 
-func newStartByIdMessage() dsdk.DataFlowStartByIdMessage {
-	return dsdk.DataFlowStartByIdMessage{
+func newStartByIdMessage() dsdk.DataFlowStartedNotificationMessage {
+	return dsdk.DataFlowStartedNotificationMessage{
 		DataAddress: &dsdk.DataAddress{
 			Properties: map[string]any{
 				"foo": "bar",
@@ -451,16 +455,16 @@ func newTransferType() dsdk.TransferType {
 func newPrepareMessage() dsdk.DataFlowPrepareMessage {
 	return dsdk.DataFlowPrepareMessage{
 		DataFlowBaseMessage: dsdk.DataFlowBaseMessage{
-			MessageID:              uuid.New().String(),
-			ParticipantID:          uuid.New().String(),
-			CounterPartyID:         uuid.New().String(),
-			DataspaceContext:       uuid.New().String(),
-			ProcessID:              uuid.New().String(),
-			AgreementID:            uuid.New().String(),
-			DatasetID:              uuid.New().String(),
-			CallbackAddress:        newCallback(),
-			TransferType:           newTransferType(),
-			DestinationDataAddress: dsdk.DataAddress{},
+			MessageID:        uuid.New().String(),
+			ParticipantID:    uuid.New().String(),
+			CounterPartyID:   uuid.New().String(),
+			DataspaceContext: uuid.New().String(),
+			ProcessID:        uuid.New().String(),
+			AgreementID:      uuid.New().String(),
+			DatasetID:        uuid.New().String(),
+			CallbackAddress:  newCallback(),
+			TransferType:     newTransferType(),
+			DataAddress:      dsdk.DataAddress{},
 		},
 	}
 }

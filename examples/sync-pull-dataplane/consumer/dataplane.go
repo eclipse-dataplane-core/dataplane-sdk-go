@@ -102,8 +102,8 @@ func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 	_ *dsdk.DataPlaneSDK,
 	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
 	log.Printf("[Consumer Data Plane] Transfer access token available for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	endpoint := options.SourceDataAddress.Properties[dsdk.EndpointKey].(string)
-	token := options.SourceDataAddress.Properties["token"].(string)
+	endpoint := options.DataAddress.Properties[dsdk.EndpointKey].(string)
+	token := options.DataAddress.Properties["token"].(string)
 	d.tokenStore.Create(flow.DatasetID, tokenEntry{datasetID: flow.DatasetID, token: token, endpoint: endpoint})
 	return &dsdk.DataFlowResponseMessage{State: dsdk.Started}, nil
 }

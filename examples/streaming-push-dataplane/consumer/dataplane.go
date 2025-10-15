@@ -124,7 +124,7 @@ func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
 	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started, DataAddress: options.SourceDataAddress}, nil
+	return &dsdk.DataFlowResponseMessage{State: dsdk.Started, DataAddress: options.DataAddress}, nil
 }
 
 func (d *ConsumerDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataFlow) error {

@@ -666,7 +666,6 @@ func createPrepareMessage() DataFlowPrepareMessage {
 func createStartMessage() DataFlowStartMessage {
 	return DataFlowStartMessage{
 		DataFlowBaseMessage: createBaseMessage(),
-		SourceDataAddress:   &DataAddress{},
 	}
 }
 func createBaseMessage() DataFlowBaseMessage {
@@ -683,11 +682,11 @@ func createBaseMessage() DataFlowBaseMessage {
 			DestinationType: "test-type",
 			FlowType:        Pull,
 		},
-		DestinationDataAddress: DataAddress{},
+		DataAddress: DataAddress{},
 	}
 }
-func createStartByIdMessage() DataFlowStartByIdMessage {
-	return DataFlowStartByIdMessage{
+func createStartByIdMessage() DataFlowStartedNotificationMessage {
+	return DataFlowStartedNotificationMessage{
 		DataAddress: &DataAddress{},
 	}
 }

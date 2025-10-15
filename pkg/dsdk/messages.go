@@ -7,16 +7,16 @@ import (
 var v = validator.New()
 
 type DataFlowBaseMessage struct {
-	MessageID              string       `json:"messageID" validate:"required"`
-	ParticipantID          string       `json:"participantID" validate:"required"`
-	CounterPartyID         string       `json:"counterPartyID" validate:"required"`
-	DataspaceContext       string       `json:"dataspaceContext" validate:"required"`
-	ProcessID              string       `json:"processID" validate:"required"`
-	AgreementID            string       `json:"agreementID" validate:"required"`
-	DatasetID              string       `json:"datasetID"`
-	CallbackAddress        CallbackURL  `json:"callbackAddress" validate:"required,callback-url"`
-	TransferType           TransferType `json:"transferType" validate:"required"`
-	DestinationDataAddress DataAddress  `json:"destinationDataAddress" validate:"required"`
+	MessageID        string       `json:"messageID" validate:"required"`
+	ParticipantID    string       `json:"participantID" validate:"required"`
+	CounterPartyID   string       `json:"counterPartyID" validate:"required"`
+	DataspaceContext string       `json:"dataspaceContext" validate:"required"`
+	ProcessID        string       `json:"processID" validate:"required"`
+	AgreementID      string       `json:"agreementID" validate:"required"`
+	DatasetID        string       `json:"datasetID"`
+	CallbackAddress  CallbackURL  `json:"callbackAddress" validate:"required,callback-url"`
+	TransferType     TransferType `json:"transferType" validate:"required"`
+	DataAddress      DataAddress  `json:"dataAddress" validate:"required"`
 }
 
 func (d *DataFlowBaseMessage) Validate() error {
@@ -36,7 +36,6 @@ func (d *DataFlowBaseMessage) Validate() error {
 
 type DataFlowStartMessage struct {
 	DataFlowBaseMessage
-	SourceDataAddress *DataAddress `json:"sourceDataAddress,omitempty"`
 }
 
 func (d *DataFlowStartMessage) Validate() error {
@@ -51,11 +50,11 @@ func (d *DataFlowStartMessage) Validate() error {
 	return nil
 }
 
-type DataFlowStartByIdMessage struct {
-	DataAddress *DataAddress `json:"dataAddress,omitempty" validate:"required"`
+type DataFlowStartedNotificationMessage struct {
+	DataAddress *DataAddress `json:"dataAddress,omitempty"`
 }
 
-func (d *DataFlowStartByIdMessage) Validate() error {
+func (d *DataFlowStartedNotificationMessage) Validate() error {
 	err := v.Struct(d)
 	if err != nil {
 		return WrapValidationError(err)

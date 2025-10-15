@@ -52,7 +52,7 @@ func (d *DataFlowStartMessage) Validate() error {
 }
 
 type DataFlowStartByIdMessage struct {
-	SourceDataAddress *DataAddress `json:"sourceDataAddress,omitempty" validate:"required"`
+	SourceDataAddress *DataAddress `json:"dataAddress,omitempty" validate:"required"`
 }
 
 func (d *DataFlowStartByIdMessage) Validate() error {

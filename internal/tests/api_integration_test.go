@@ -35,7 +35,7 @@ func newServerWithSdk(t *testing.T, sdk *dsdk.DataPlaneSDK) http.Handler {
 	r := chi.NewRouter()
 
 	r.Post("/dataflows/start", sdkApi.Start)
-	r.Post("/dataflows/{id}/start", func(writer http.ResponseWriter, request *http.Request) {
+	r.Post("/dataflows/{id}/started", func(writer http.ResponseWriter, request *http.Request) {
 		id := chi.URLParam(request, "id")
 		sdkApi.StartById(writer, request, id)
 	})
@@ -111,7 +111,7 @@ func Test_StartByID_WhenNotFound(t *testing.T) {
 	requestBody, err := serialize(newStartByIdMessage())
 	assert.NoError(t, err)
 
-	req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/start", bytes.NewBuffer(requestBody))
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/started", bytes.NewBuffer(requestBody))
 	assert.NoError(t, err)
 
 	rr := httptest.NewRecorder()
@@ -138,7 +138,7 @@ func Test_StartByID_WhenStartedOrStarting(t *testing.T) {
 		requestBody, err := serialize(newStartByIdMessage())
 		assert.NoError(t, err)
 
-		req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/start", bytes.NewBuffer(requestBody))
+		req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/started", bytes.NewBuffer(requestBody))
 		assert.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -181,7 +181,7 @@ func Test_StartByID_WhenPrepared(t *testing.T) {
 		requestBody, err := serialize(newStartByIdMessage())
 		assert.NoError(t, err)
 
-		req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/start", bytes.NewBuffer(requestBody))
+		req, err := http.NewRequest(http.MethodPost, "/dataflows/"+id+"/started", bytes.NewBuffer(requestBody))
 		assert.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -199,7 +199,7 @@ func Test_StartByID_MissingSourceAddress(t *testing.T) {
 	requestBody, err := serialize(dsdk.DataFlowStartByIdMessage{})
 	assert.NoError(t, err)
 
-	req, err := http.NewRequest(http.MethodPost, "/dataflows/some-id/start", bytes.NewBuffer(requestBody))
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/some-id/started", bytes.NewBuffer(requestBody))
 	assert.NoError(t, err)
 
 	rr := httptest.NewRecorder()

@@ -40,7 +40,7 @@ type TokenResponse struct {
 func NewSignalingServer(sdkApi *dsdk.DataPlaneApi, port int) *http.Server {
 	r := chi.NewRouter()
 	r.Post("/dataflows/start", sdkApi.Start)
-	r.Post("/dataflows/{id}/start", func(writer http.ResponseWriter, request *http.Request) {
+	r.Post("/dataflows/{id}/started", func(writer http.ResponseWriter, request *http.Request) {
 		id := chi.URLParam(request, "id")
 		sdkApi.StartById(writer, request, id)
 	})

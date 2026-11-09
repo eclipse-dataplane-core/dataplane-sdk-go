@@ -42,6 +42,9 @@ type DataPlaneSDK struct {
 	onTerminate DataFlowHandler
 	onSuspend   DataFlowHandler
 	onComplete  DataFlowHandler
+
+	controlPlanes      ControlPlaneResolver
+	controlPlaneClient ControlPlaneClient
 }
 
 // Prepare is called on the consumer to prepare for receiving data.
@@ -556,6 +559,9 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 	}
 	if sdk.onComplete == nil {
 		sdk.onComplete = noopHandler
+	}
+	if sdk.controlPlaneClient == nil {
+		sdk.controlPlaneClient = NewHTTPControlPlaneClient()
 	}
 	return sdk, nil
 }

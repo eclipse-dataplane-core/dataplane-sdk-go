@@ -30,6 +30,16 @@ qualities of service, and error handling.
 - Function: `Suspend(ctx context.Context, processID string) error`
 - Requires: Process ID
 
+### 5. Control plane callbacks
+
+- Purpose: Completes asynchronous transitions and reports data-plane-initiated changes to the control plane
+- Functions: `NotifyPrepared(ctx, id, processor)`, `NotifyStarted(ctx, id, processor)`, `NotifyCompleted(ctx, id)`,
+  `NotifyErrored(ctx, id, cause)`
+- Each call transitions the flow, POSTs a `DataFlowStatusMessage` to
+  `{controlPlaneURL}/transfers/{id}/dataflow/{prepared|started|completed|errored}` and persists the flow only when the
+  control plane answers 2xx. 5xx responses and network errors are retried (see `RetryPolicy`).
+- Configure the endpoint with `WithControlPlane(url)`; see `examples/async-start-dataplane`.
+
 ## Key Features
 
 ### State Management

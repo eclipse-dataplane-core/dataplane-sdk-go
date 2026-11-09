@@ -13,6 +13,7 @@
 package dsdk
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,12 +28,13 @@ const jsonContentType = "application/json"
 // DataPlaneApi implements the data plane endpoints of the Data Plane Signaling API. Its handlers expect the data flow
 // id in the "id" path value; use NewHandler to mount them.
 type DataPlaneApi struct {
-	sdk      *DataPlaneSDK
-	basePath string
+	sdk        *DataPlaneSDK
+	basePath   string
+	identifier ControlPlaneIdentifier
 }
 
 func NewDataPlaneApi(sdk *DataPlaneSDK) *DataPlaneApi {
-	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath}
+	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath, identifier: DefaultControlPlaneIdentifier(sdk)}
 }
 
 // Prepare handles POST /dataflows/prepare.
@@ -46,7 +48,11 @@ func (d *DataPlaneApi) Prepare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := d.sdk.Prepare(r.Context(), message)
+	ctx, ok := d.identify(w, r)
+	if !ok {
+		return
+	}
+	response, err := d.sdk.Prepare(ctx, message)
 	if err != nil {
 		d.handleError(err, w)
 		return
@@ -71,7 +77,11 @@ func (d *DataPlaneApi) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := d.sdk.Start(r.Context(), message)
+	ctx, ok := d.identify(w, r)
+	if !ok {
+		return
+	}
+	response, err := d.sdk.Start(ctx, message)
 	if err != nil {
 		d.handleError(err, w)
 		return
@@ -177,6 +187,41 @@ func (d *DataPlaneApi) Status(w http.ResponseWriter, r *http.Request) {
 		State:      dataFlow.State,
 	}
 	d.writeResponse(w, http.StatusOK, response)
+}
+
+// RegisterControlPlane handles PUT /controlplanes. It answers 200 without a body.
+func (d *DataPlaneApi) RegisterControlPlane(w http.ResponseWriter, r *http.Request) {
+	var message ControlPlaneRegistrationMessage
+	if !d.decode(w, r, &message) {
+		return
+	}
+	if err := d.sdk.RegisterControlPlane(r.Context(), message); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// DeleteControlPlane handles DELETE /controlplanes/{controlPlaneId}. It answers 204, or 404 for an unknown id.
+func (d *DataPlaneApi) DeleteControlPlane(w http.ResponseWriter, r *http.Request) {
+	if err := d.sdk.DeleteControlPlane(r.Context(), r.PathValue("controlPlaneId")); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// identify returns the request context carrying the id of the calling control plane, or writes 401.
+func (d *DataPlaneApi) identify(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
+	if d.identifier == nil {
+		return r.Context(), true
+	}
+	id, err := d.identifier(r)
+	if err != nil {
+		d.writeResponse(w, http.StatusUnauthorized, &ErrorResponse{Error: fmt.Sprintf("unable to identify the control plane: %s", err)})
+		return nil, false
+	}
+	return ContextWithControlPlaneID(r.Context(), id), true
 }
 
 func (d *DataPlaneApi) statusPath(id string) string {

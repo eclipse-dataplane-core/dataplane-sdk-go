@@ -21,6 +21,10 @@ const (
 	ActionErrored   = "errored"
 	// ActionAgreement identifies a failed GET /transfers/{id}/agreement in a ControlPlaneError.
 	ActionAgreement = "agreement"
+	// ActionRegisterDataPlane identifies a failed PUT /dataplanes in a ControlPlaneError.
+	ActionRegisterDataPlane = "register data plane"
+	// ActionDeregisterDataPlane identifies a failed DELETE /dataplanes/{id} in a ControlPlaneError.
+	ActionDeregisterDataPlane = "deregister data plane"
 )
 
 // ErrControlPlaneNotRegistered is returned when no control plane endpoint is known for a data flow.
@@ -40,6 +44,10 @@ type ControlPlaneClient interface {
 	//
 	// TODO: return a typed Agreement model once the SDK needs to evaluate policies (DSP Agreement / ODRL).
 	GetAgreement(ctx context.Context, controlPlaneURL string, dataFlowID string) (json.RawMessage, error)
+	// RegisterDataPlane creates or replaces the registration of this data plane: PUT {controlPlaneURL}/dataplanes.
+	RegisterDataPlane(ctx context.Context, controlPlaneURL string, message DataPlaneRegistrationMessage) error
+	// DeregisterDataPlane removes the registration of this data plane: DELETE {controlPlaneURL}/dataplanes/{dataPlaneID}.
+	DeregisterDataPlane(ctx context.Context, controlPlaneURL string, dataPlaneID string) error
 }
 
 // ControlPlaneResolver returns the endpoint of the control plane with the given id.
@@ -148,6 +156,43 @@ func (c *HTTPControlPlaneClient) GetAgreement(ctx context.Context, controlPlaneU
 	return body, nil
 }
 
+// RegisterDataPlane sends PUT {controlPlaneURL}/dataplanes. A non-2xx response is returned as a *ControlPlaneError.
+func (c *HTTPControlPlaneClient) RegisterDataPlane(ctx context.Context, controlPlaneURL string, message DataPlaneRegistrationMessage) error {
+	endpoint, err := joinURL(controlPlaneURL, "dataplanes")
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("encoding data plane registration: %w", err)
+	}
+	_, err = c.do(ctx, ActionRegisterDataPlane, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(contentType, jsonContentType)
+		return req, nil
+	})
+	return err
+}
+
+// DeregisterDataPlane sends DELETE {controlPlaneURL}/dataplanes/{dataPlaneID}. A non-2xx response is returned as a
+// *ControlPlaneError.
+func (c *HTTPControlPlaneClient) DeregisterDataPlane(ctx context.Context, controlPlaneURL string, dataPlaneID string) error {
+	if dataPlaneID == "" {
+		return fmt.Errorf("%w: data plane id cannot be empty", ErrInvalidInput)
+	}
+	endpoint, err := joinURL(controlPlaneURL, "dataplanes", dataPlaneID)
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, ActionDeregisterDataPlane, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	})
+	return err
+}
+
 // do sends the request built by newRequest, retrying on 5xx and transport errors, and returns the body of a 2xx
 // response.
 func (c *HTTPControlPlaneClient) do(ctx context.Context, action string, newRequest func() (*http.Request, error)) ([]byte, error) {
@@ -191,6 +236,15 @@ func (c *HTTPControlPlaneClient) do(ctx context.Context, action string, newReque
 // transferURL returns {base}/transfers/{id}/{segments...}. The id is escaped as a single path segment, and the base
 // may have a path prefix with or without a trailing slash.
 func transferURL(base string, id string, segments ...string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("%w: data flow id cannot be empty", ErrInvalidInput)
+	}
+	return joinURL(base, append([]string{"transfers", id}, segments...)...)
+}
+
+// joinURL appends the segments to the path of base, escaping each one as a single path segment. The base may have a
+// path prefix with or without a trailing slash; its query and fragment are dropped.
+func joinURL(base string, segments ...string) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return "", fmt.Errorf("%w: invalid control plane URL %q: %w", ErrInvalidInput, base, err)
@@ -198,10 +252,7 @@ func transferURL(base string, id string, segments ...string) (string, error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("%w: invalid control plane URL %q", ErrInvalidInput, base)
 	}
-	if id == "" {
-		return "", fmt.Errorf("%w: data flow id cannot be empty", ErrInvalidInput)
-	}
-	escaped := strings.TrimSuffix(u.EscapedPath(), "/") + "/transfers/" + url.PathEscape(id)
+	escaped := strings.TrimSuffix(u.EscapedPath(), "/")
 	for _, s := range segments {
 		escaped += "/" + url.PathEscape(s)
 	}

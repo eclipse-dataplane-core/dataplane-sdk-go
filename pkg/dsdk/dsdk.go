@@ -45,6 +45,7 @@ type DataPlaneSDK struct {
 
 	controlPlanes      ControlPlaneResolver
 	controlPlaneClient ControlPlaneClient
+	controlPlaneStore  ControlPlaneStore
 }
 
 // Prepare is called on the consumer to prepare for receiving data.
@@ -55,6 +56,8 @@ func (dsdk *DataPlaneSDK) Prepare(ctx context.Context, message DataFlowPrepareMe
 		return nil, err
 	}
 	id := message.DataFlowID
+	// read before execute: a TransactionContext may run the callback with a context that lacks the caller's values
+	controlPlaneID := ControlPlaneIDFromContext(ctx)
 	var response *DataFlowStatusMessage
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
@@ -80,7 +83,7 @@ func (dsdk *DataPlaneSDK) Prepare(ctx context.Context, message DataFlowPrepareMe
 			return fmt.Errorf("%w: data flow %s is not in PREPARING or PREPARED state but in %s", ErrConflict, flow.ID, flow.State)
 		}
 
-		flow, err = newFlow(message.DataFlowBaseMessage, true)
+		flow, err = newFlow(controlPlaneID, message.DataFlowBaseMessage, true)
 		if err != nil {
 			return err
 		}
@@ -111,6 +114,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 		return nil, err
 	}
 	id := message.DataFlowID
+	controlPlaneID := ControlPlaneIDFromContext(ctx)
 	var response *DataFlowStatusMessage
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
 		existing, err := dsdk.Store.FindById(ctx, id)
@@ -121,7 +125,7 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 			return fmt.Errorf("%w: data flow %s already exists", ErrConflict, id)
 		}
 
-		flow, err := newFlow(message.DataFlowBaseMessage, false)
+		flow, err := newFlow(controlPlaneID, message.DataFlowBaseMessage, false)
 		if err != nil {
 			return err
 		}
@@ -354,7 +358,8 @@ func (dsdk *DataPlaneSDK) Complete(ctx context.Context, id string) error {
 	})
 }
 
-func newFlow(message DataFlowBaseMessage, consumer bool) (*DataFlow, error) {
+// newFlow creates a data flow from the message for the given control plane.
+func newFlow(controlPlaneID string, message DataFlowBaseMessage, consumer bool) (*DataFlow, error) {
 	flow, err := NewDataFlowBuilder().ID(message.DataFlowID).
 		Consumer(consumer).
 		State(Initialized).
@@ -367,6 +372,7 @@ func newFlow(message DataFlowBaseMessage, consumer bool) (*DataFlow, error) {
 		Claims(message.Claims).
 		Labels(message.Labels).
 		Metadata(message.Metadata).
+		ControlPlaneID(controlPlaneID).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("creating data flow: %w", err)
@@ -562,6 +568,9 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 	}
 	if sdk.controlPlaneClient == nil {
 		sdk.controlPlaneClient = NewHTTPControlPlaneClient()
+	}
+	if sdk.controlPlanes == nil && sdk.controlPlaneStore != nil {
+		sdk.controlPlanes = storeResolver{store: sdk.controlPlaneStore}
 	}
 	return sdk, nil
 }

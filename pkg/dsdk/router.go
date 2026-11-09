@@ -1,6 +1,8 @@
 package dsdk
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -9,7 +11,45 @@ import (
 const DefaultBasePath = "/v1"
 
 type handlerConfig struct {
-	basePath string
+	basePath      string
+	identifier    ControlPlaneIdentifier
+	hasIdentifier bool
+}
+
+// ControlPlaneIdentifier returns the id of the control plane that sent a request. Prepare and start record it on the
+// new data flow, so that callbacks reach that control plane. An error is answered with 401.
+type ControlPlaneIdentifier func(r *http.Request) (string, error)
+
+// WithControlPlaneIdentifier sets how NewHandler identifies the calling control plane. The default is
+// DefaultControlPlaneIdentifier.
+func WithControlPlaneIdentifier(identifier ControlPlaneIdentifier) HandlerOption {
+	return func(c *handlerConfig) {
+		c.identifier = identifier
+		c.hasIdentifier = true
+	}
+}
+
+// DefaultControlPlaneIdentifier returns an identifier that, if the SDK has a ControlPlaneStore holding exactly one
+// registered control plane, returns that control plane's id, and "" otherwise. It fails only if the store fails.
+func DefaultControlPlaneIdentifier(sdk *DataPlaneSDK) ControlPlaneIdentifier {
+	return func(r *http.Request) (string, error) {
+		if sdk.controlPlaneStore == nil {
+			return "", nil
+		}
+		var controlPlanes []*ControlPlane
+		err := sdk.execute(r.Context(), func(ctx context.Context) error {
+			var err error
+			controlPlanes, err = sdk.controlPlaneStore.FindAll(ctx)
+			return err
+		})
+		if err != nil {
+			return "", fmt.Errorf("listing control planes: %w", err)
+		}
+		if len(controlPlanes) == 1 {
+			return controlPlanes[0].ID, nil
+		}
+		return "", nil
+	}
 }
 
 // HandlerOption configures the handler returned by NewHandler.
@@ -34,12 +74,23 @@ func WithBasePath(basePath string) HandlerOption {
 //	POST <base>/dataflows/{id}/terminate
 //	POST <base>/dataflows/{id}/completed
 //	GET  <base>/dataflows/{id}/status
+//
+// If the SDK has a ControlPlaneStore (WithControlPlaneStore), it also serves the control plane registration
+// endpoints:
+//
+//	PUT    <base>/controlplanes
+//	DELETE <base>/controlplanes/{controlPlaneId}
+//
+// Prepare and start record the id of the calling control plane on new data flows; see WithControlPlaneIdentifier.
 func NewHandler(sdk *DataPlaneSDK, options ...HandlerOption) http.Handler {
 	config := handlerConfig{basePath: DefaultBasePath}
 	for _, opt := range options {
 		opt(&config)
 	}
-	api := &DataPlaneApi{sdk: sdk, basePath: config.basePath}
+	if !config.hasIdentifier {
+		config.identifier = DefaultControlPlaneIdentifier(sdk)
+	}
+	api := &DataPlaneApi{sdk: sdk, basePath: config.basePath, identifier: config.identifier}
 	base := config.basePath + "/dataflows"
 
 	mux := http.NewServeMux()
@@ -51,5 +102,9 @@ func NewHandler(sdk *DataPlaneSDK, options ...HandlerOption) http.Handler {
 	mux.HandleFunc("POST "+base+"/{id}/terminate", api.Terminate)
 	mux.HandleFunc("POST "+base+"/{id}/completed", api.Completed)
 	mux.HandleFunc("GET "+base+"/{id}/status", api.Status)
+	if sdk.controlPlaneStore != nil {
+		mux.HandleFunc("PUT "+config.basePath+"/controlplanes", api.RegisterControlPlane)
+		mux.HandleFunc("DELETE "+config.basePath+"/controlplanes/{controlPlaneId}", api.DeleteControlPlane)
+	}
 	return mux
 }

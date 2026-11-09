@@ -15,6 +15,18 @@ type DataplaneStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// ControlPlaneStore stores the control planes registered with this data plane.
+type ControlPlaneStore interface {
+	// Save creates or replaces the control plane with the same id.
+	Save(ctx context.Context, controlPlane *ControlPlane) error
+	// FindById returns the control plane with the given id, or ErrNotFound.
+	FindById(ctx context.Context, id string) (*ControlPlane, error)
+	// FindAll returns all registered control planes.
+	FindAll(ctx context.Context) ([]*ControlPlane, error)
+	// Delete removes the control plane with the given id, or returns ErrNotFound.
+	Delete(ctx context.Context, id string) error
+}
+
 // TransactionContext defines an extension point for executing operations within a transactional context.
 type TransactionContext interface {
 	Execute(ctx context.Context, callback func(ctx context.Context) error) error

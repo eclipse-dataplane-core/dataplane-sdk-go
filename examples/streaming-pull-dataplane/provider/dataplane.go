@@ -27,7 +27,7 @@ import (
 
 // ProviderDataPlane demonstrates how to use the Data Plane SDK. This implementation supports pull event streaming.
 type ProviderDataPlane struct {
-	api                   *dsdk.DataPlaneApi
+	sdk                   *dsdk.DataPlaneSDK
 	signalingServer       *http.Server
 	authService           *natsservices.AuthService
 	connectionInvalidator ConnectionInvalidator
@@ -51,13 +51,13 @@ func NewDataPlane(authService *natsservices.AuthService,
 		return nil, err
 	}
 
-	providerDataPlane.api = dsdk.NewDataPlaneApi(sdk)
+	providerDataPlane.sdk = sdk
 
 	return providerDataPlane, nil
 }
 
 func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ProviderSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
 
 	// Start signaling server
 	go func() {
@@ -80,14 +80,14 @@ func (d *ProviderDataPlane) Shutdown(ctx context.Context) {
 func (d *ProviderDataPlane) prepareProcessor(_ context.Context,
 	_ *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	return nil, errors.New("not supported on provider")
 }
 
 func (d *ProviderDataPlane) startProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	if options.Duplicate {
 		// Perform de-duplication. This code path is not needed, but it demonstrates how de-deduplication can be handled
 	}
@@ -100,11 +100,11 @@ func (d *ProviderDataPlane) startProcessor(_ context.Context,
 	channel := flow.ID + "." + natsservices.ForwardSuffix
 	replyChannel := flow.ID + "." + natsservices.ReplySuffix
 	da, err := dsdk.NewDataAddressBuilder().
-		Property(dsdk.EndpointType, natsservices.NATSEndpointType).
-		Property(dsdk.EndpointKey, natsservices.NatsUrl).
-		EndpointProperty(natsservices.TokenKey, "string", token).
-		EndpointProperty(natsservices.ChannelKey, "string", channel).
-		EndpointProperty(natsservices.ReplyChannelKey, "string", replyChannel).
+		EndpointType(natsservices.NATSEndpointType).
+		Endpoint(natsservices.NatsUrl).
+		Property(natsservices.TokenKey, token).
+		Property(natsservices.ChannelKey, channel).
+		Property(natsservices.ReplyChannelKey, replyChannel).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build data address: %w", err)
@@ -114,7 +114,7 @@ func (d *ProviderDataPlane) startProcessor(_ context.Context,
 	d.publisherService.Start(channel)
 
 	log.Printf("[Provider Data Plane] Starting transfer for %s\n", flow.CounterPartyID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started, DataAddress: da}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: da}, nil
 }
 
 func (d *ProviderDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataFlow) error {

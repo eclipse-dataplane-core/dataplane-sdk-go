@@ -42,9 +42,8 @@ func (s *InMemoryStore) FindById(ctx context.Context, id string) (*dsdk.DataFlow
 		return nil, dsdk.ErrNotFound
 	}
 
-	// Return a copy to prevent external modifications
-	flowCopy := *flow
-	return &flowCopy, nil
+	// Return a deep copy to prevent external modifications
+	return flow.Copy(), nil
 }
 
 // Create creates a new DataFlow entry
@@ -63,9 +62,8 @@ func (s *InMemoryStore) Create(ctx context.Context, flow *dsdk.DataFlow) error {
 		return dsdk.ErrConflict
 	}
 
-	// Store a copy to prevent external modifications
-	flowCopy := *flow
-	s.flows[flow.ID] = &flowCopy
+	// Store a deep copy to prevent external modifications
+	s.flows[flow.ID] = flow.Copy()
 	return nil
 }
 
@@ -85,9 +83,8 @@ func (s *InMemoryStore) Save(ctx context.Context, flow *dsdk.DataFlow) error {
 		return dsdk.ErrNotFound
 	}
 
-	// Store a copy to prevent external modifications
-	flowCopy := *flow
-	s.flows[flow.ID] = &flowCopy
+	// Store a deep copy to prevent external modifications
+	s.flows[flow.ID] = flow.Copy()
 	return nil
 }
 

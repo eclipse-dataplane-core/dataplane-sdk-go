@@ -14,9 +14,13 @@ package natsservices
 
 const (
 	NATSEndpointType = "https://test.org/natsdp/v1/nats"
-	TokenKey         = "token"
-	ForwardSuffix    = "forward"
-	ReplySuffix      = "reply"
-	ChannelKey       = "channel"
-	ReplyChannelKey  = "replyChannel"
+	// PullProfile and PushProfile are the transfer profiles of the streaming samples; the SDK derives the transfer
+	// type from the last '-' token.
+	PullProfile     = "https://test.org/natsdp/v1/nats-pull"
+	PushProfile     = "https://test.org/natsdp/v1/nats-push"
+	TokenKey        = "token"
+	ForwardSuffix   = "forward"
+	ReplySuffix     = "reply"
+	ChannelKey      = "channel"
+	ReplyChannelKey = "replyChannel"
 )

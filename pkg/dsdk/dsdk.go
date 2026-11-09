@@ -5,14 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
+
+	"github.com/google/uuid"
 )
 
-// DataFlowProcessor is an extension point for handling SDK data flow events. Implementations may modify the data flow instance
-// which will be persisted by the SDK. If the message is a duplicate, implementations must support idempotent behavior.
-type DataFlowProcessor func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error)
+// DataFlowProcessor is an extension point for handling SDK data flow events. Implementations may modify the data flow
+// instance, which is persisted by the SDK, and return the resulting state, an optional DataAddress and an optional
+// error description. The SDK sets the messageId and dataFlowId of the returned message. If the message is a duplicate,
+// implementations must support idempotent behavior.
+type DataFlowProcessor func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error)
 
 type ProcessorOptions struct {
-	Duplicate   bool
+	// Duplicate is true if the flow already reached the requested state and the message is processed again.
+	Duplicate bool
+	// DataAddress is the DataAddress received with the message, if any.
 	DataAddress *DataAddress
 }
 
@@ -23,6 +29,8 @@ type LogMonitor interface {
 	Printf(format string, v ...any)
 }
 
+var errNilResponse = errors.New("processor returned no response")
+
 type DataPlaneSDK struct {
 	Store      DataplaneStore
 	TrxContext TransactionContext
@@ -30,226 +38,276 @@ type DataPlaneSDK struct {
 
 	onPrepare   DataFlowProcessor
 	onStart     DataFlowProcessor
+	onResume    DataFlowProcessor
 	onTerminate DataFlowHandler
 	onSuspend   DataFlowHandler
 	onComplete  DataFlowHandler
 }
 
 // Prepare is called on the consumer to prepare for receiving data.
-// It invokes the onPrepare callback and persists the created flow. Returns a response or an error if the process fails.
-func (dsdk *DataPlaneSDK) Prepare(ctx context.Context, message DataFlowPrepareMessage) (*DataFlowResponseMessage, error) {
-	processID := message.ProcessID
-	if processID == "" {
-		return nil, errors.New("processID cannot be empty")
+// It invokes the onPrepare processor and persists the created flow. For push transfers the response carries the
+// DataAddress the provider pushes data to.
+func (dsdk *DataPlaneSDK) Prepare(ctx context.Context, message DataFlowPrepareMessage) (*DataFlowStatusMessage, error) {
+	if err := message.Validate(); err != nil {
+		return nil, err
 	}
-	var response *DataFlowResponseMessage
-	err := dsdk.execute(ctx, func(context.Context) error {
-		flow, err := dsdk.Store.FindById(ctx, processID)
+	id := message.DataFlowID
+	var response *DataFlowStatusMessage
+	err := dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			return fmt.Errorf("performing de-duplication for %s: %w", processID, err)
+			return fmt.Errorf("performing de-duplication for %s: %w", id, err)
 		}
 
 		switch {
 		case flow != nil && (flow.State == Preparing || flow.State == Prepared):
-			// duplicate message, pass to handler to generate a data address if needed (on consumer)
-			response, err = dsdk.onPrepare(ctx, flow, dsdk, &ProcessorOptions{Duplicate: true})
+			// duplicate message, pass to processor to generate a data address if needed
+			response, err = dsdk.process(ctx, dsdk.onPrepare, flow, &ProcessorOptions{Duplicate: true})
 			if err != nil {
-				return fmt.Errorf("processing data flow: %w", err)
+				return err
 			}
-			// todo: not sure about this, added because Prepare() has it too
+			if err := dsdk.prepareState(response, flow); err != nil {
+				return err
+			}
 			if err := dsdk.Store.Save(ctx, flow); err != nil {
-				return fmt.Errorf("creating data flow: %w", err)
+				return fmt.Errorf("saving data flow %s: %w", flow.ID, err)
 			}
 			return nil
 		case flow != nil:
-			return fmt.Errorf("%w: data flow %s is not in PREPARING or PREPARED state but in %s", ErrConflict, flow.ID, flow.State.String())
-			//return NewConflictError(fmt.Sprintf("data flow %s is not in PREPARING or PREPARED state", flow.ID))
-		}
-		flow, err = NewDataFlowBuilder().ID(processID).
-			Consumer(true).
-			State(Preparing).
-			AgreementID(message.AgreementID).
-			DatasetID(message.DatasetID).
-			ParticipantID(message.ParticipantID).
-			CounterpartyID(message.CounterPartyID).
-			DataspaceContext(message.DataspaceContext).
-			TransferType(message.TransferType).
-			CallbackAddress(message.CallbackAddress).
-			Build()
-
-		if err != nil {
-			return fmt.Errorf("creating data flow: %w", err)
+			return fmt.Errorf("%w: data flow %s is not in PREPARING or PREPARED state but in %s", ErrConflict, flow.ID, flow.State)
 		}
 
-		response, err = dsdk.onPrepare(ctx, flow, dsdk, &ProcessorOptions{})
+		flow, err = newFlow(message.DataFlowBaseMessage, true)
 		if err != nil {
-			return fmt.Errorf("processing data flow %s: %w", flow.ID, err)
+			return err
 		}
-		if response.State == Prepared {
-			err := flow.TransitionToPrepared()
-			if err != nil {
-				return err
-			}
-		} else if response.State == Preparing {
-			err := flow.TransitionToPreparing()
-			if err != nil {
-				return err
-			}
-		} else {
-			return fmt.Errorf("onPrepare returned an invalid state %s", response.State)
+
+		response, err = dsdk.process(ctx, dsdk.onPrepare, flow, &ProcessorOptions{})
+		if err != nil {
+			return err
+		}
+		if err := dsdk.prepareState(response, flow); err != nil {
+			return err
 		}
 		if err := dsdk.Store.Create(ctx, flow); err != nil {
 			return fmt.Errorf("creating data flow %s: %w", flow.ID, err)
 		}
 		return nil
 	})
-
-	// fixme: shouldn't we always return a clean nil/error or response/nil tuple?
-	return response, err
-}
-
-// Start is called on the provider and starts a data flow based on the given start message and execution context.
-// It invokes the onStart callback and persists the created flow. Returns a response or an error if the process fails.
-func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessage) (*DataFlowResponseMessage, error) {
-	processID := message.ProcessID
-	if processID == "" {
-		return nil, errors.New("processID cannot be empty")
+	if err != nil {
+		return nil, err
 	}
-	var response *DataFlowResponseMessage
-	err := dsdk.execute(ctx, func(context.Context) error {
-		flow, err := dsdk.Store.FindById(ctx, processID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return fmt.Errorf("performing de-duplication for %s: %w", processID, err)
-		}
-
-		if flow == nil {
-			// provider side, process
-			flow, err = NewDataFlowBuilder().ID(processID).
-				State(Starting).
-				AgreementID(message.AgreementID).
-				DatasetID(message.DatasetID).
-				ParticipantID(message.ParticipantID).
-				CounterpartyID(message.CounterPartyID).
-				DataspaceContext(message.DataspaceContext).
-				TransferType(message.TransferType).
-				CallbackAddress(message.CallbackAddress).
-				Build()
-			if err != nil {
-				return fmt.Errorf("creating data flow: %w", err)
-			}
-			response, err = dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: message.DataAddress})
-			if err != nil {
-				return fmt.Errorf("processing data flow: %w", err)
-			}
-
-			err = dsdk.startState(response, flow)
-			if err != nil {
-				return fmt.Errorf("onStart returned an invalid state: %w", err)
-			}
-
-			if err := dsdk.Store.Create(ctx, flow); err != nil {
-				return fmt.Errorf("creating data flow: %w", err)
-			}
-			return nil
-		}
-
-		response, err = dsdk.startExistingFlow(ctx, flow, message.DataAddress)
-		return err
-	})
-
-	return response, err
-
+	return response, nil
 }
 
-func (dsdk *DataPlaneSDK) StartById(ctx context.Context, processID string, message DataFlowStartedNotificationMessage) (*DataFlowResponseMessage, error) {
-	var response *DataFlowResponseMessage
-
+// Start is called on the provider and starts a data flow based on the given start message.
+// It invokes the onStart processor and persists the created flow. For pull transfers the response carries the
+// DataAddress the consumer obtains the data from. A start message for an existing data flow is rejected with ErrConflict.
+func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessage) (*DataFlowStatusMessage, error) {
+	if err := message.Validate(); err != nil {
+		return nil, err
+	}
+	id := message.DataFlowID
+	var response *DataFlowStatusMessage
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
-		existingFlow, err := dsdk.Store.FindById(ctx, processID)
+		existing, err := dsdk.Store.FindById(ctx, id)
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			return fmt.Errorf("performing de-duplication for %s: %w", processID, err)
+			return fmt.Errorf("performing de-duplication for %s: %w", id, err)
+		}
+		if existing != nil {
+			return fmt.Errorf("%w: data flow %s already exists", ErrConflict, id)
 		}
 
-		if existingFlow == nil { // this should never happen -> the store would return an error
-			return ErrNotFound
-		}
-
-		if !existingFlow.Consumer {
-			return fmt.Errorf("%w: startById is only valid for consumer data flows", ErrInvalidInput)
-		}
-
-		response, err = dsdk.startExistingFlow(ctx, existingFlow, message.DataAddress)
-		return err
-
-	})
-	return response, err
-
-}
-
-func (dsdk *DataPlaneSDK) Terminate(ctx context.Context, processID string, reason string) error {
-	if processID == "" {
-		return errors.New("processID cannot be empty")
-	}
-
-	return dsdk.execute(ctx, func(ctx context.Context) error {
-		flow, err := dsdk.Store.FindById(ctx, processID)
-		if err != nil {
-			return fmt.Errorf("terminating data flow %s: %w", processID, err)
-		}
-
-		if Terminated == flow.State {
-			return nil // duplicate message, skip processing
-		}
-
-		if err := dsdk.onTerminate(ctx, flow); err != nil {
-			return fmt.Errorf("terminating data flow %s: %w", flow.ID, err)
-		}
-
-		err = flow.TransitionToTerminated(reason)
+		flow, err := newFlow(message.DataFlowBaseMessage, false)
 		if err != nil {
 			return err
 		}
+		switch {
+		case flow.IsPull() && message.DataAddress != nil:
+			return fmt.Errorf("%w: a start message for a pull transfer must not contain a data address", ErrInvalidInput)
+		case flow.IsPush() && message.DataAddress == nil:
+			return fmt.Errorf("%w: a start message for a push transfer must contain a data address", ErrInvalidInput)
+		}
+		dsdk.setReceivedAddress(flow, message.DataAddress)
 
-		err = dsdk.Store.Save(ctx, flow)
+		response, err = dsdk.process(ctx, dsdk.onStart, flow, &ProcessorOptions{DataAddress: message.DataAddress})
 		if err != nil {
-			return fmt.Errorf("terminating data flow %s: %w", flow.ID, err)
+			return err
+		}
+		if err := dsdk.startState(response, flow); err != nil {
+			return err
+		}
+		if err := dsdk.Store.Create(ctx, flow); err != nil {
+			return fmt.Errorf("creating data flow %s: %w", flow.ID, err)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
-func (dsdk *DataPlaneSDK) Suspend(ctx context.Context, processID string, reason string) error {
-	if processID == "" {
-		return errors.New("processID cannot be empty")
+// Started is called on the consumer when the provider has started the transfer. For pull transfers the message must
+// carry the DataAddress to obtain the data from; for push transfers it must not carry one.
+// It invokes the onStart processor and persists the flow.
+func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFlowStartedNotificationMessage) (*DataFlowStatusMessage, error) {
+	if err := message.Validate(); err != nil {
+		return nil, err
 	}
-
-	return dsdk.execute(ctx, func(ctx context.Context) error {
-		flow, err := dsdk.Store.FindById(ctx, processID)
+	var response *DataFlowStatusMessage
+	err := dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
-			return fmt.Errorf("suspending data flow %s: %w", processID, err)
+			return fmt.Errorf("starting data flow %s: %w", id, err)
+		}
+		if !flow.Consumer {
+			return fmt.Errorf("%w: started is only valid for consumer data flows", ErrInvalidInput)
+		}
+		switch {
+		case flow.IsPull() && message.DataAddress == nil:
+			return fmt.Errorf("%w: a started message for a pull transfer must contain a data address", ErrInvalidInput)
+		case flow.IsPush() && message.DataAddress != nil:
+			return fmt.Errorf("%w: a started message for a push transfer must not contain a data address", ErrInvalidInput)
 		}
 
-		if Suspended == flow.State {
+		var duplicate bool
+		switch flow.State {
+		case Started:
+			duplicate = true
+		case Prepared, Starting:
+		default:
+			return fmt.Errorf("%w: data flow %s cannot be started from state %s", ErrInvalidTransition, flow.ID, flow.State)
+		}
+
+		dsdk.setReceivedAddress(flow, message.DataAddress)
+		response, err = dsdk.process(ctx, dsdk.onStart, flow, &ProcessorOptions{Duplicate: duplicate, DataAddress: message.DataAddress})
+		if err != nil {
+			return err
+		}
+		if err := dsdk.startState(response, flow); err != nil {
+			return err
+		}
+		// the consumer already handed out its DataAddress (if any) in the prepare response
+		response.DataAddress = nil
+		if err := dsdk.Store.Save(ctx, flow); err != nil {
+			return fmt.Errorf("saving data flow %s: %w", flow.ID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// Suspend suspends a STARTED data flow on request of the control plane.
+func (dsdk *DataPlaneSDK) Suspend(ctx context.Context, id string, message DataFlowSuspendMessage) error {
+	if err := message.Validate(); err != nil {
+		return err
+	}
+	return dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, id)
+		if err != nil {
+			return fmt.Errorf("suspending data flow %s: %w", id, err)
+		}
+
+		if flow.State == Suspended {
 			return nil // duplicate message, skip processing
+		}
+		if flow.State != Started {
+			return fmt.Errorf("%w: cannot transition from %v to SUSPENDED", ErrInvalidTransition, flow.State)
 		}
 
 		if err := dsdk.onSuspend(ctx, flow); err != nil {
 			return fmt.Errorf("suspending data flow %s: %w", flow.ID, err)
 		}
-		err = flow.TransitionToSuspended(reason)
-		if err != nil {
+		if err := flow.TransitionToSuspended(message.Reason, SuspendedByRemote); err != nil {
 			return err
 		}
-
-		err = dsdk.Store.Save(ctx, flow)
-		if err != nil {
+		if err := dsdk.Store.Save(ctx, flow); err != nil {
 			return fmt.Errorf("suspending data flow %s: %w", flow.ID, err)
 		}
 		return nil
 	})
-
 }
 
+// Resume resumes a data flow that was suspended by the control plane. The message may carry a new DataAddress of the
+// counterparty. The response carries the DataAddress this data plane provides to the counterparty, if any.
+func (dsdk *DataPlaneSDK) Resume(ctx context.Context, id string, message DataFlowResumeMessage) (*DataFlowStatusMessage, error) {
+	if err := message.Validate(); err != nil {
+		return nil, err
+	}
+	var response *DataFlowStatusMessage
+	err := dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, id)
+		if err != nil {
+			return fmt.Errorf("resuming data flow %s: %w", id, err)
+		}
+
+		if flow.State != Suspended {
+			return fmt.Errorf("%w: data flow %s cannot be resumed from state %s", ErrInvalidTransition, flow.ID, flow.State)
+		}
+		if flow.SuspendedBy != SuspendedByRemote {
+			return fmt.Errorf("%w: data flow %s was suspended by the %s party and can only be resumed by it", ErrInvalidTransition, flow.ID, flow.SuspendedBy)
+		}
+
+		if message.DataAddress != nil {
+			dsdk.setReceivedAddress(flow, message.DataAddress)
+		}
+		response, err = dsdk.process(ctx, dsdk.onResume, flow, &ProcessorOptions{DataAddress: message.DataAddress})
+		if err != nil {
+			return err
+		}
+		if response.State != Started {
+			return fmt.Errorf("onResume returned an invalid state %s", response.State)
+		}
+		if err := flow.TransitionToResumed(SuspendedByRemote); err != nil {
+			return err
+		}
+		if err := dsdk.Store.Save(ctx, flow); err != nil {
+			return fmt.Errorf("resuming data flow %s: %w", flow.ID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// Terminate terminates a data flow. COMPLETED flows cannot be terminated.
+func (dsdk *DataPlaneSDK) Terminate(ctx context.Context, id string, message DataFlowTerminateMessage) error {
+	if err := message.Validate(); err != nil {
+		return err
+	}
+	return dsdk.execute(ctx, func(ctx context.Context) error {
+		flow, err := dsdk.Store.FindById(ctx, id)
+		if err != nil {
+			return fmt.Errorf("terminating data flow %s: %w", id, err)
+		}
+
+		if flow.State == Terminated {
+			return nil // duplicate message, skip processing
+		}
+		if flow.State == Completed {
+			return fmt.Errorf("%w: data flow %s is already COMPLETED", ErrInvalidTransition, flow.ID)
+		}
+
+		if err := dsdk.onTerminate(ctx, flow); err != nil {
+			return fmt.Errorf("terminating data flow %s: %w", flow.ID, err)
+		}
+		if err := flow.TransitionToTerminated(message.Reason); err != nil {
+			return err
+		}
+		if err := dsdk.Store.Save(ctx, flow); err != nil {
+			return fmt.Errorf("terminating data flow %s: %w", flow.ID, err)
+		}
+		return nil
+	})
+}
+
+// Status returns the data flow with the given id.
 func (dsdk *DataPlaneSDK) Status(ctx context.Context, id string) (*DataFlow, error) {
 	var flow *DataFlow
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
@@ -263,94 +321,135 @@ func (dsdk *DataPlaneSDK) Status(ctx context.Context, id string) (*DataFlow, err
 	return flow, err
 }
 
-func (dsdk *DataPlaneSDK) Complete(ctx context.Context, dataflowID string) error {
-	if dataflowID == "" {
-		return errors.New("processID cannot be empty")
+// Complete marks a STARTED data flow as COMPLETED and invokes the onComplete processor.
+func (dsdk *DataPlaneSDK) Complete(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: data flow id cannot be empty", ErrInvalidInput)
 	}
 
 	return dsdk.execute(ctx, func(ctx context.Context) error {
-		flow, err := dsdk.Store.FindById(ctx, dataflowID)
+		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
-			return fmt.Errorf("completing data flow %s: %w", dataflowID, err)
+			return fmt.Errorf("completing data flow %s: %w", id, err)
 		}
 
 		if flow.State == Completed { // de-duplication
 			return nil
 		}
 
-		transitionError := flow.TransitionToCompleted()
-		if transitionError != nil {
-			return transitionError
+		if err := flow.TransitionToCompleted(); err != nil {
+			return err
 		}
 		// only invoked if the transition was successful
-		e := dsdk.onComplete(ctx, flow)
-		if e != nil {
-			return e
+		if err := dsdk.onComplete(ctx, flow); err != nil {
+			return fmt.Errorf("completing data flow %s: %w", flow.ID, err)
 		}
-		storeErr := dsdk.Store.Save(ctx, flow)
-		if storeErr != nil {
-			return fmt.Errorf("completing data flow %s: %w", flow.ID, storeErr)
+		if err := dsdk.Store.Save(ctx, flow); err != nil {
+			return fmt.Errorf("completing data flow %s: %w", flow.ID, err)
 		}
 		return nil
 	})
 }
 
-func (dsdk *DataPlaneSDK) startExistingFlow(ctx context.Context, flow *DataFlow, sourceAddress *DataAddress) (*DataFlowResponseMessage, error) {
-	switch {
-	case flow != nil && (flow.State == Starting || flow.State == Started):
-		// duplicate message, pass to handler to generate a data address if needed
-		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{Duplicate: true, DataAddress: sourceAddress})
-		if err != nil {
-			return nil, fmt.Errorf("processing data flow: %w", err)
-		}
+func newFlow(message DataFlowBaseMessage, consumer bool) (*DataFlow, error) {
+	flow, err := NewDataFlowBuilder().ID(message.DataFlowID).
+		Consumer(consumer).
+		State(Initialized).
+		AgreementID(message.AgreementID).
+		DatasetID(message.DatasetID).
+		ParticipantID(message.ParticipantID).
+		CounterpartyID(message.CounterPartyID).
+		DataspaceContext(message.DataspaceContext).
+		Profile(message.Profile).
+		Claims(message.Claims).
+		Labels(message.Labels).
+		Metadata(message.Metadata).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("creating data flow: %w", err)
+	}
+	return flow, nil
+}
 
-		err = dsdk.startState(response, flow)
-		if err != nil {
-			return nil, fmt.Errorf("onStart returned an invalid state: %w", err)
+// process invokes the processor, fills in the message and data flow ids, and keeps the DataAddress only where the
+// specification allows this data plane to send one: consumer-push and provider-pull. The returned address is
+// recorded on the flow.
+func (dsdk *DataPlaneSDK) process(ctx context.Context, processor DataFlowProcessor, flow *DataFlow, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+	response, err := processor(ctx, flow, dsdk, options)
+	if err != nil {
+		return nil, fmt.Errorf("processing data flow %s: %w", flow.ID, err)
+	}
+	if response == nil {
+		return nil, fmt.Errorf("processing data flow %s: %w", flow.ID, errNilResponse)
+	}
+	response.MessageID = uuid.NewString()
+	response.DataFlowID = flow.ID
+	if providesAddress(flow) {
+		if response.DataAddress != nil {
+			setProvidedAddress(flow, response.DataAddress)
+		} else {
+			response.DataAddress = providedAddress(flow).Copy()
 		}
+	} else {
+		response.DataAddress = nil
+	}
+	return response, nil
+}
 
-		if err := dsdk.Store.Save(ctx, flow); err != nil {
-			return nil, fmt.Errorf("creating data flow: %w", err)
-		}
-		return response, err
-	case flow != nil && flow.Consumer && flow.State == Prepared:
-		// consumer side, process
-		response, err := dsdk.onStart(ctx, flow, dsdk, &ProcessorOptions{DataAddress: sourceAddress})
-		if err != nil {
-			return nil, fmt.Errorf("processing data flow: %w", err)
-		}
+// providesAddress is true for flows where this data plane hands a DataAddress to the counterparty: the consumer
+// receives pushed data, and the provider serves pulled data.
+func providesAddress(flow *DataFlow) bool {
+	return (flow.Consumer && flow.IsPush()) || (!flow.Consumer && flow.IsPull())
+}
 
-		err = dsdk.startState(response, flow)
-		if err != nil {
-			return nil, fmt.Errorf("onStart returned an invalid state: %w", err)
-		}
+func providedAddress(flow *DataFlow) *DataAddress {
+	if flow.Consumer {
+		return flow.DestinationDataAddress
+	}
+	return flow.SourceDataAddress
+}
 
-		if err := dsdk.Store.Save(ctx, flow); err != nil {
-			return nil, fmt.Errorf("updating data flow: %w", err)
-		}
-
-		return response, nil
-
-	default:
-		return nil, fmt.Errorf("%w: data flow %s is not in STARTED state: %s", ErrInvalidTransition, flow.ID, flow.State)
+func setProvidedAddress(flow *DataFlow, address *DataAddress) {
+	if flow.Consumer {
+		flow.DestinationDataAddress = address.Copy()
+	} else {
+		flow.SourceDataAddress = address.Copy()
 	}
 }
 
-func (dsdk *DataPlaneSDK) startState(response *DataFlowResponseMessage, flow *DataFlow) error {
-	if response.State == Started {
-		err := flow.TransitionToStarted()
-		if err != nil {
-			return err
-		}
-	} else if response.State == Starting {
-		err := flow.TransitionToStarting()
-		if err != nil {
-			return err
-		}
+// setReceivedAddress records a DataAddress received from the counterparty: where the provider pushes to, or where the
+// consumer pulls from.
+func (dsdk *DataPlaneSDK) setReceivedAddress(flow *DataFlow, address *DataAddress) {
+	if address == nil {
+		return
+	}
+	if flow.Consumer {
+		flow.SourceDataAddress = address.Copy()
 	} else {
+		flow.DestinationDataAddress = address.Copy()
+	}
+}
+
+func (dsdk *DataPlaneSDK) prepareState(response *DataFlowStatusMessage, flow *DataFlow) error {
+	switch response.State {
+	case Prepared:
+		return flow.TransitionToPrepared()
+	case Preparing:
+		return flow.TransitionToPreparing()
+	default:
+		return fmt.Errorf("onPrepare returned an invalid state %s", response.State)
+	}
+}
+
+func (dsdk *DataPlaneSDK) startState(response *DataFlowStatusMessage, flow *DataFlow) error {
+	switch response.State {
+	case Started:
+		return flow.TransitionToStarted()
+	case Starting:
+		return flow.TransitionToStarting()
+	default:
 		return fmt.Errorf("onStart returned an invalid state %s", response.State)
 	}
-	return nil
 }
 
 func (dsdk *DataPlaneSDK) execute(ctx context.Context, callback func(ctx2 context.Context) error) error {
@@ -389,9 +488,16 @@ func WithPrepareProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	}
 }
 
+// WithStartProcessor sets the processor invoked for /start on the provider and for /started on the consumer.
 func WithStartProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onStart = processor
+	}
+}
+
+func WithResumeProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
+	return func(sdk *DataPlaneSDK) {
+		sdk.onResume = processor
 	}
 }
 
@@ -404,6 +510,12 @@ func WithTerminateProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 func WithSuspendProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onSuspend = handler
+	}
+}
+
+func WithCompleteProcessor(handler DataFlowHandler) DataPlaneSDKOption {
+	return func(sdk *DataPlaneSDK) {
+		sdk.onComplete = handler
 	}
 }
 
@@ -428,39 +540,35 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 		sdk.Monitor = defaultLogMonitor{}
 	}
 	if sdk.onPrepare == nil {
-		sdk.onPrepare = func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{
-				DataplaneID: "TODO_REPLACE_ME",
-				DataAddress: &flow.DestinationDataAddress,
-				State:       Prepared,
-				Error:       ""}, nil
-		}
+		sdk.onPrepare = stateProcessor(Prepared)
 	}
 	if sdk.onStart == nil {
-		sdk.onStart = func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{
-				State:       Started,
-				DataplaneID: "TODO_REPLACE_ME",
-				DataAddress: &flow.DestinationDataAddress,
-				Error:       ""}, nil
-		}
+		sdk.onStart = stateProcessor(Started)
+	}
+	if sdk.onResume == nil {
+		sdk.onResume = stateProcessor(Started)
 	}
 	if sdk.onTerminate == nil {
-		sdk.onTerminate = func(context context.Context, flow *DataFlow) error {
-			return nil
-		}
+		sdk.onTerminate = noopHandler
 	}
 	if sdk.onSuspend == nil {
-		sdk.onSuspend = func(context context.Context, flow *DataFlow) error {
-			return nil
-		}
+		sdk.onSuspend = noopHandler
 	}
 	if sdk.onComplete == nil {
-		sdk.onComplete = func(context context.Context, flow *DataFlow) error {
-			return nil
-		}
+		sdk.onComplete = noopHandler
 	}
 	return sdk, nil
+}
+
+// stateProcessor returns a processor that only reports the given state.
+func stateProcessor(state DataFlowState) DataFlowProcessor {
+	return func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return &DataFlowStatusMessage{State: state}, nil
+	}
+}
+
+func noopHandler(context.Context, *DataFlow) error {
+	return nil
 }
 
 type defaultLogMonitor struct {

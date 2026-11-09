@@ -27,7 +27,7 @@ import (
 
 // ConsumerDataPlane demonstrates how to use the Data Plane SDK. This implementation supports push event streaming.
 type ConsumerDataPlane struct {
-	api                   *dsdk.DataPlaneApi
+	sdk                   *dsdk.DataPlaneSDK
 	signalingServer       *http.Server
 	authService           *natsservices.AuthService
 	connectionInvalidator ConnectionInvalidator
@@ -58,13 +58,13 @@ func NewDataPlane(authService *natsservices.AuthService,
 		return nil, err
 	}
 
-	dataPlane.api = dsdk.NewDataPlaneApi(sdk)
+	dataPlane.sdk = sdk
 
 	return dataPlane, nil
 }
 
 func (d *ConsumerDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ConsumerSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
 
 	// Start signaling server
 	go func() {
@@ -87,7 +87,7 @@ func (d *ConsumerDataPlane) Shutdown(ctx context.Context) {
 func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	if options.Duplicate {
 		// Perform de-duplication. This code path is not needed, but it demonstrates how de-deduplication can be handled
 	}
@@ -106,25 +106,25 @@ func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 
 	replyChannel := flow.ID + "." + natsservices.ReplySuffix
 	da, err := dsdk.NewDataAddressBuilder().
-		Property(dsdk.EndpointType, natsservices.NATSEndpointType).
-		Property(dsdk.EndpointKey, natsservices.NatsUrl).
-		EndpointProperty(natsservices.TokenKey, "string", token).
-		EndpointProperty(natsservices.ChannelKey, "string", channel).
-		EndpointProperty(natsservices.ReplyChannelKey, "string", replyChannel).
+		EndpointType(natsservices.NATSEndpointType).
+		Endpoint(natsservices.NatsUrl).
+		Property(natsservices.TokenKey, token).
+		Property(natsservices.ChannelKey, channel).
+		Property(natsservices.ReplyChannelKey, replyChannel).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build data address: %w", err)
 	}
 
 	log.Printf("[Consumer Data Plane] Prepare transfer for %s\n", flow.CounterPartyID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Prepared, DataAddress: da}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared, DataAddress: da}, nil
 }
 
 func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started, DataAddress: options.DataAddress}, nil
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: options.DataAddress}, nil
 }
 
 func (d *ConsumerDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataFlow) error {

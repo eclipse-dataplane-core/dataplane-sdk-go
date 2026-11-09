@@ -13,11 +13,9 @@
 package dsdk
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -26,248 +24,200 @@ import (
 const contentType = "Content-Type"
 const jsonContentType = "application/json"
 
+// DataPlaneApi implements the data plane endpoints of the Data Plane Signaling API. Its handlers expect the data flow
+// id in the "id" path value; use NewHandler to mount them.
 type DataPlaneApi struct {
-	sdk *DataPlaneSDK
+	sdk      *DataPlaneSDK
+	basePath string
 }
 
 func NewDataPlaneApi(sdk *DataPlaneSDK) *DataPlaneApi {
-	return &DataPlaneApi{sdk: sdk}
+	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath}
 }
 
+// Prepare handles POST /dataflows/prepare.
 func (d *DataPlaneApi) Prepare(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusBadRequest)
+	var message DataFlowPrepareMessage
+	if !d.decode(w, r, &message) {
 		return
 	}
-	var prepareMessage DataFlowPrepareMessage
-
-	if err := json.NewDecoder(r.Body).Decode(&prepareMessage); err != nil {
-		d.decodingError(w, err)
-		return
-	}
-
-	if err := prepareMessage.Validate(); err != nil {
+	if err := message.Validate(); err != nil {
 		d.handleError(err, w)
 		return
 	}
 
-	response, err := d.sdk.Prepare(r.Context(), prepareMessage)
+	response, err := d.sdk.Prepare(r.Context(), message)
 	if err != nil {
 		d.handleError(err, w)
 		return
 	}
 
-	var code int
-	if response.State == Prepared {
-		code = http.StatusOK
-	} else {
+	code := http.StatusOK
+	if response.State == Preparing {
 		code = http.StatusAccepted
+		w.Header().Set("Location", d.statusPath(response.DataFlowID))
 	}
 	d.writeResponse(w, code, response)
 }
 
+// Start handles POST /dataflows/start.
 func (d *DataPlaneApi) Start(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusBadRequest)
+	var message DataFlowStartMessage
+	if !d.decode(w, r, &message) {
 		return
 	}
-	var startMessage DataFlowStartMessage
-
-	if err := json.NewDecoder(r.Body).Decode(&startMessage); err != nil {
-		d.decodingError(w, err)
-		return
-	}
-
-	if err := startMessage.Validate(); err != nil {
+	if err := message.Validate(); err != nil {
 		d.handleError(err, w)
 		return
 	}
 
-	response, err := d.sdk.Start(r.Context(), startMessage)
+	response, err := d.sdk.Start(r.Context(), message)
 	if err != nil {
 		d.handleError(err, w)
 		return
 	}
 
-	var code int
-	if response.State == Started {
-		code = http.StatusOK
-	} else {
+	code := http.StatusOK
+	if response.State == Starting {
 		code = http.StatusAccepted
-		w.Header().Set("Location", "/dataflows/"+startMessage.ProcessID)
-	}
-	d.writeResponse(w, code, response)
-
-}
-
-func (d *DataPlaneApi) StartById(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusBadRequest)
-		return
-	}
-	var startMessage DataFlowStartedNotificationMessage
-
-	if err := json.NewDecoder(r.Body).Decode(&startMessage); err != nil {
-		d.decodingError(w, err)
-		return
-	}
-
-	if err := startMessage.Validate(); err != nil {
-		d.handleError(err, w)
-		return
-	}
-
-	response, err := d.sdk.StartById(r.Context(), id, startMessage)
-	if err != nil {
-		d.handleError(err, w)
-		return
-	}
-
-	var code int
-	if response.State == Started {
-		code = http.StatusOK
-	} else {
-		code = http.StatusAccepted
-		w.Header().Set("Location", "/dataflows/"+id)
+		w.Header().Set("Location", d.statusPath(response.DataFlowID))
 	}
 	d.writeResponse(w, code, response)
 }
 
-func (d *DataPlaneApi) Terminate(id string, w http.ResponseWriter, r *http.Request) {
-	reason := ""
-	// Peek into the body
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		d.decodingError(w, err)
+// Started handles POST /dataflows/{id}/started. It always answers 200 with a DataFlowStatusMessage on success.
+func (d *DataPlaneApi) Started(w http.ResponseWriter, r *http.Request) {
+	var message DataFlowStartedNotificationMessage
+	if !d.decode(w, r, &message) {
 		return
 	}
-	// if a body was sent, parse it, read the reason
-
-	if len(bodyBytes) > 0 {
-		var terminateMessage DataFlowTransitionMessage
-
-		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&terminateMessage); err != nil {
-			d.decodingError(w, err)
-			return
-		}
-		if err := terminateMessage.Validate(); err != nil {
-			d.handleError(err, w)
-			return
-		}
-		reason = terminateMessage.Reason
-	}
-	terminateError := d.sdk.Terminate(r.Context(), id, reason)
-	if terminateError != nil {
-		d.handleError(terminateError, w)
-		return
-	}
-
-	w.Header().Set(contentType, jsonContentType)
-	w.WriteHeader(http.StatusOK)
-}
-
-func (d *DataPlaneApi) Suspend(id string, w http.ResponseWriter, r *http.Request) {
-
-	reason := ""
-	// Peek into the body
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		d.decodingError(w, err)
-		return
-	}
-	// if a body was sent, parse it, read the reason
-	if len(bodyBytes) > 0 {
-		var suspendMessage DataFlowTransitionMessage
-
-		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&suspendMessage); err != nil {
-			d.decodingError(w, err)
-			return
-		}
-		if err := suspendMessage.Validate(); err != nil {
-			d.handleError(err, w)
-			return
-		}
-		reason = suspendMessage.Reason
-	}
-
-	suspensionError := d.sdk.Suspend(r.Context(), id, reason)
-	if suspensionError != nil {
-		d.handleError(suspensionError, w)
-		return
-	}
-
-	w.Header().Set(contentType, jsonContentType)
-	w.WriteHeader(http.StatusOK)
-
-}
-
-func (d *DataPlaneApi) Status(processID string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Invalid request method", http.StatusBadRequest)
-		return
-	}
-	dataFlow, err := d.sdk.Status(r.Context(), processID)
-	if err != nil {
+	if err := message.Validate(); err != nil {
 		d.handleError(err, w)
 		return
 	}
-	w.Header().Set(contentType, jsonContentType)
-	response := DataFlowStatusResponseMessage{
-		State:      dataFlow.State,
-		DataFlowID: dataFlow.ID,
+
+	response, err := d.sdk.Started(r.Context(), r.PathValue("id"), message)
+	if err != nil {
+		d.handleError(err, w)
+		return
 	}
 	d.writeResponse(w, http.StatusOK, response)
 }
 
-func (d *DataPlaneApi) Complete(processID string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusBadRequest)
+// Suspend handles POST /dataflows/{id}/suspend.
+func (d *DataPlaneApi) Suspend(w http.ResponseWriter, r *http.Request) {
+	var message DataFlowSuspendMessage
+	if !d.decode(w, r, &message) {
 		return
 	}
-	err := d.sdk.Complete(r.Context(), processID)
+	if err := message.Validate(); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	if err := d.sdk.Suspend(r.Context(), r.PathValue("id"), message); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// Resume handles POST /dataflows/{id}/resume.
+func (d *DataPlaneApi) Resume(w http.ResponseWriter, r *http.Request) {
+	var message DataFlowResumeMessage
+	if !d.decode(w, r, &message) {
+		return
+	}
+	if err := message.Validate(); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	response, err := d.sdk.Resume(r.Context(), r.PathValue("id"), message)
 	if err != nil {
 		d.handleError(err, w)
 		return
 	}
-	d.writeResponse(w, http.StatusOK, nil)
+	d.writeResponse(w, http.StatusOK, response)
 }
 
-func (d *DataPlaneApi) decodingError(w http.ResponseWriter, err error) {
-	id := uuid.NewString()
-	d.sdk.Monitor.Printf("Error decoding flow [%s]: %v\n", id, err)
-	d.writeResponse(w, http.StatusBadRequest, &DataFlowResponseMessage{Error: fmt.Sprintf("Failed to decode request body [%s]", id)})
+// Terminate handles POST /dataflows/{id}/terminate.
+func (d *DataPlaneApi) Terminate(w http.ResponseWriter, r *http.Request) {
+	var message DataFlowTerminateMessage
+	if !d.decode(w, r, &message) {
+		return
+	}
+	if err := message.Validate(); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	if err := d.sdk.Terminate(r.Context(), r.PathValue("id"), message); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
-// handleError writes an error message to the HTTP response that indicates "any other" error, such as 409, 500, etc.
+// Completed handles POST /dataflows/{id}/completed. The request has an empty body.
+func (d *DataPlaneApi) Completed(w http.ResponseWriter, r *http.Request) {
+	if err := d.sdk.Complete(r.Context(), r.PathValue("id")); err != nil {
+		d.handleError(err, w)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// Status handles GET /dataflows/{id}/status.
+func (d *DataPlaneApi) Status(w http.ResponseWriter, r *http.Request) {
+	dataFlow, err := d.sdk.Status(r.Context(), r.PathValue("id"))
+	if err != nil {
+		d.handleError(err, w)
+		return
+	}
+	response := DataFlowStatusResponseMessage{
+		DataFlowID: dataFlow.ID,
+		State:      dataFlow.State,
+	}
+	d.writeResponse(w, http.StatusOK, response)
+}
+
+func (d *DataPlaneApi) statusPath(id string) string {
+	return d.basePath + "/dataflows/" + id + "/status"
+}
+
+func (d *DataPlaneApi) decode(w http.ResponseWriter, r *http.Request, target any) bool {
+	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
+		id := uuid.NewString()
+		d.sdk.Monitor.Printf("Error decoding request [%s]: %v\n", id, err)
+		d.writeResponse(w, http.StatusBadRequest, &ErrorResponse{Error: fmt.Sprintf("Failed to decode request body [%s]", id)})
+		return false
+	}
+	return true
+}
+
+// handleError maps an SDK error to an HTTP status code and writes an ErrorResponse.
 func (d *DataPlaneApi) handleError(err error, w http.ResponseWriter) {
-
 	switch {
 	case errors.Is(err, ErrValidation), errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrInvalidInput):
-		d.badRequest(err.Error(), w)
+		d.writeResponse(w, http.StatusBadRequest, &ErrorResponse{Error: err.Error()})
 	case errors.Is(err, ErrNotFound):
-		d.writeResponse(w, http.StatusNotFound, &DataFlowResponseMessage{Error: err.Error()})
+		d.writeResponse(w, http.StatusNotFound, &ErrorResponse{Error: err.Error()})
 	case errors.Is(err, ErrConflict):
-		message := fmt.Sprintf("%s", err)
-		d.writeResponse(w, http.StatusConflict, &DataFlowResponseMessage{Error: message})
+		d.writeResponse(w, http.StatusConflict, &ErrorResponse{Error: err.Error()})
 	default:
 		message := fmt.Sprintf("Error processing flow: %s", err)
 		d.sdk.Monitor.Println(message)
-		d.writeResponse(w, http.StatusInternalServerError, &DataFlowResponseMessage{Error: message})
+		d.writeResponse(w, http.StatusInternalServerError, &ErrorResponse{Error: message})
 	}
-}
-
-func (d *DataPlaneApi) badRequest(errMsg string, w http.ResponseWriter) {
-	d.writeResponse(w, http.StatusBadRequest, &DataFlowResponseMessage{Error: errMsg})
 }
 
 func (d *DataPlaneApi) writeResponse(w http.ResponseWriter, code int, response any) {
+	body, err := json.Marshal(response)
+	if err != nil {
+		id := uuid.NewString()
+		d.sdk.Monitor.Printf("Error encoding response [%s]: %v\n", id, err)
+		code = http.StatusInternalServerError
+		body, _ = json.Marshal(&ErrorResponse{Error: fmt.Sprintf("Error encoding response [%s]", id)})
+	}
 	w.Header().Set(contentType, jsonContentType)
 	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		id := uuid.NewString()
-		message := fmt.Sprintf("Error encoding response [%s]", id)
-		d.sdk.Monitor.Println(message)
-		d.writeResponse(w, http.StatusInternalServerError, &DataFlowResponseMessage{Error: message})
-		return
-	}
+	_, _ = w.Write(append(body, '\n'))
 }

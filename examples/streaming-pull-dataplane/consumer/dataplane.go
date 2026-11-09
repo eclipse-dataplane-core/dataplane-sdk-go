@@ -25,7 +25,7 @@ import (
 )
 
 type ConsumerDataPlane struct {
-	api             *dsdk.DataPlaneApi
+	sdk             *dsdk.DataPlaneSDK
 	signalingServer *http.Server
 	dataServer      *http.Server
 	eventSubscriber *natsservices.EventSubscriber
@@ -43,12 +43,12 @@ func NewDataPlane(eventSubscriber *natsservices.EventSubscriber) (*ConsumerDataP
 	if err != nil {
 		return nil, err
 	}
-	dataplane.api = dsdk.NewDataPlaneApi(sdk)
+	dataplane.sdk = sdk
 	return dataplane, nil
 }
 
 func (d *ConsumerDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ConsumerSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
 	// Start signaling server
 	go func() {
 		log.Printf("[Consumer Data Plane] Signaling server listening on port %d\n", common.ConsumerSignalingPort)
@@ -70,18 +70,18 @@ func (d *ConsumerDataPlane) Shutdown(ctx context.Context) {
 func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 
 	log.Printf("[Consumer Data Plane] Prepared transfer for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Prepared}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared}, nil
 }
 
 func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 
-	endpoint := options.DataAddress.Properties[dsdk.EndpointKey].(string)
+	endpoint := options.DataAddress.Endpoint
 	token, found := parseToken(natsservices.TokenKey, options.DataAddress)
 	if !found {
 		return nil, errors.New("token not found in endpoint properties")
@@ -98,7 +98,7 @@ func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 		return nil, err
 	}
 	log.Printf("[Consumer Data Plane] Started NATS subscriber for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
 }
 
 func (d *ConsumerDataPlane) terminateProcessor(_ context.Context, flow *dsdk.DataFlow) error {
@@ -114,14 +114,5 @@ func (d *ConsumerDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataF
 }
 
 func parseToken(keyValue string, da *dsdk.DataAddress) (string, bool) {
-	rawProps, ok := da.Properties[dsdk.EndpointProperties].([]any)
-	if !ok {
-		log.Fatal("endpoint properties is not a slice")
-	}
-	for _, item := range rawProps {
-		if item.(map[string]any)["key"] == keyValue {
-			return item.(map[string]any)["value"].(string), true
-		}
-	}
-	return "", false
+	return da.Property(keyValue)
 }

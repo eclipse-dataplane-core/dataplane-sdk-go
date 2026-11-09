@@ -51,8 +51,8 @@ func Test_WithMonitor(t *testing.T) {
 }
 
 func Test_WithPrepareProcessor(t *testing.T) {
-	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error) {
-		return &DataFlowResponseMessage{State: Prepared}, nil
+	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return &DataFlowStatusMessage{State: Prepared}, nil
 	}
 	sdk := &DataPlaneSDK{}
 
@@ -63,8 +63,8 @@ func Test_WithPrepareProcessor(t *testing.T) {
 }
 
 func Test_WithStartProcessor(t *testing.T) {
-	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowResponseMessage, error) {
-		return &DataFlowResponseMessage{State: Started}, nil
+	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return &DataFlowStatusMessage{State: Started}, nil
 	}
 	sdk := &DataPlaneSDK{}
 
@@ -98,6 +98,30 @@ func Test_WithSuspendProcessor(t *testing.T) {
 	require.NotNil(t, sdk.onSuspend)
 }
 
+func Test_WithResumeProcessor(t *testing.T) {
+	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return &DataFlowStatusMessage{State: Started}, nil
+	}
+	sdk := &DataPlaneSDK{}
+
+	option := WithResumeProcessor(processor)
+	option(sdk)
+
+	require.NotNil(t, sdk.onResume)
+}
+
+func Test_WithCompleteProcessor(t *testing.T) {
+	handler := func(context.Context, *DataFlow) error {
+		return nil
+	}
+	sdk := &DataPlaneSDK{}
+
+	option := WithCompleteProcessor(handler)
+	option(sdk)
+
+	require.NotNil(t, sdk.onComplete)
+}
+
 func Test_NewDataPlaneSDK_WithoutOptionalFields(t *testing.T) {
 	store := NewMockDataplaneStore(t)
 	trxContext := &mockTrxContext{}
@@ -116,6 +140,8 @@ func Test_NewDataPlaneSDK_WithoutOptionalFields(t *testing.T) {
 	assert.NotNil(t, sdk.onStart)
 	assert.NotNil(t, sdk.onTerminate)
 	assert.NotNil(t, sdk.onSuspend)
+	assert.NotNil(t, sdk.onResume)
+	assert.NotNil(t, sdk.onComplete)
 }
 
 func Test_NewDataPlaneSDK_MissingStore(t *testing.T) {

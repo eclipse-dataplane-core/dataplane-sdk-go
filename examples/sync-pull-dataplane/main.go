@@ -23,6 +23,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const pullProfile = "https://w3id.org/dspace-sig/profile/http-pull"
+
 // Demonstrates initiating a data transfer using a provider data plane that implements synchronous signaling start operations.
 func main() {
 
@@ -44,22 +46,22 @@ func main() {
 	datasetID := uuid.NewString()
 
 	consumerProcessID := uuid.NewString()
-	_, err = cp.ConsumerPrepare(ctx, consumerProcessID, agreementID, datasetID)
+	_, err = cp.ConsumerPrepare(ctx, consumerProcessID, agreementID, datasetID, pullProfile)
 	if err != nil {
 		log.Fatalf("Unable to send prepare to consumer control plane: %v\n", err)
 	}
 
 	// Signal to the provider data plane
 	providerProcessID := uuid.NewString()
-	da, err := cp.ProviderStart(ctx, providerProcessID, agreementID, datasetID, nil)
+	da, err := cp.ProviderStart(ctx, providerProcessID, agreementID, datasetID, pullProfile, nil)
 	if err != nil {
 		log.Fatalf("Unable to send start to provider control plane: %v\n", err)
 	}
 
 	// Signal to the consumer data plane in response
-	err = cp.ConsumerStart(ctx, consumerProcessID, da)
+	err = cp.ConsumerStarted(ctx, consumerProcessID, da)
 	if err != nil {
-		log.Fatalf("Unable to send start to consumer control plane: %v\n", err)
+		log.Fatalf("Unable to send started to consumer control plane: %v\n", err)
 	}
 
 	if err = consumer.TransferDataset(datasetID); err != nil {

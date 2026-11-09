@@ -685,6 +685,29 @@ func Test_DataPlaneSDK_Completed(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func Test_DataPlaneSDK_Completed_StoreError(t *testing.T) {
+	store := NewMockDataplaneStore(t)
+	dsdk := DataPlaneSDK{
+		Store:      store,
+		TrxContext: &mockTrxContext{},
+		onComplete: func(ctx context.Context, flow *DataFlow) error {
+			return nil
+		},
+	}
+
+	ctx := context.Background()
+
+	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
+		ID:    "flow123",
+		State: Started,
+	}, nil)
+	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(fmt.Errorf("store error"))
+
+	err := dsdk.Complete(ctx, "flow123")
+
+	assert.ErrorContains(t, err, "store error")
+}
+
 func Test_DataPlaneSDK_Completed_AlreadyCompleted(t *testing.T) {
 	store := NewMockDataplaneStore(t)
 	dsdk := DataPlaneSDK{

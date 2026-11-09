@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/metaform/dataplane-sdk-go/examples/common"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/common"
 )
 
 const (

@@ -19,10 +19,10 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/metaform/dataplane-sdk-go/examples/common"
-	"github.com/metaform/dataplane-sdk-go/examples/natsservices"
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
-	"github.com/metaform/dataplane-sdk-go/pkg/memory"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/common"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/natsservices"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/memory"
 )
 
 // ProviderDataPlane demonstrates how to use the Data Plane SDK. This implementation supports pull event streaming.

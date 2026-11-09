@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/testcontainers/testcontainers-go"
 )

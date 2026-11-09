@@ -16,7 +16,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 )
 
 // InMemoryStore is a thread-safe in-memory implementation of DataplaneStore

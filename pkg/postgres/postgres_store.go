@@ -10,8 +10,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 	"github.com/lib/pq"
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
 )
 
 type PostgresStore struct {

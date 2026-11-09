@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/postgres"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
-	"github.com/metaform/dataplane-sdk-go/pkg/postgres"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -234,6 +234,26 @@ func Test_Prepare(t *testing.T) {
 	err = json.NewDecoder(rr.Body).Decode(&responseMessage)
 	assert.NoError(t, err)
 	assert.Equal(t, responseMessage.State, dsdk.Prepared)
+}
+
+func Test_Prepare_InvalidPayload(t *testing.T) {
+	pm := newPrepareMessage()
+	pm.CounterPartyID = "" // should raise a validation error
+	payload, err := serialize(pm)
+	assert.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, "/dataflows/prepare", bytes.NewBuffer(payload))
+	assert.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+
+	// the handler must stop after the validation error and write exactly one response body
+	decoder := json.NewDecoder(rr.Body)
+	var responseMessage dsdk.DataFlowResponseMessage
+	assert.NoError(t, decoder.Decode(&responseMessage))
+	assert.NotEmpty(t, responseMessage.Error)
+	assert.False(t, decoder.More())
 }
 
 func Test_Prepare_WrongState(t *testing.T) {

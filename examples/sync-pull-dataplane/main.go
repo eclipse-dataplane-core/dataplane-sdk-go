@@ -17,10 +17,10 @@ import (
 	"log"
 	"sync"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/controlplane"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/consumer"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/launcher"
 	"github.com/google/uuid"
-	"github.com/metaform/dataplane-sdk-go/examples/controlplane"
-	"github.com/metaform/dataplane-sdk-go/examples/sync-pull-dataplane/consumer"
-	"github.com/metaform/dataplane-sdk-go/examples/sync-pull-dataplane/launcher"
 )
 
 // Demonstrates initiating a data transfer using a provider data plane that implements synchronous signaling start operations.

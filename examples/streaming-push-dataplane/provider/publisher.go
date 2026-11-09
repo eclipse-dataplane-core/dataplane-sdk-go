@@ -15,7 +15,7 @@ package provider
 import (
 	"context"
 	"fmt"
-	"github.com/metaform/dataplane-sdk-go/examples/common"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/common"
 	"github.com/nats-io/nats.go"
 	"log"
 	"time"

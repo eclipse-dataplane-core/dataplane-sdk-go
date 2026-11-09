@@ -13,10 +13,11 @@
 package launcher
 
 import (
-	"github.com/metaform/dataplane-sdk-go/examples/natsservices"
-	"github.com/metaform/dataplane-sdk-go/examples/streaming-push-dataplane/consumer"
-	"github.com/metaform/dataplane-sdk-go/examples/streaming-push-dataplane/provider"
 	"log"
+
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/natsservices"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming-push-dataplane/consumer"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming-push-dataplane/provider"
 )
 
 func LaunchServices() (*provider.ProviderDataPlane, *consumer.ConsumerDataPlane) {

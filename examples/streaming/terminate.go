@@ -17,8 +17,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/controlplane"
 	"github.com/google/uuid"
-	"github.com/metaform/dataplane-sdk-go/examples/controlplane"
 )
 
 // TerminateScenario coordinates a simulated data transfer scenario and forcibly terminates it after a predefined duration.

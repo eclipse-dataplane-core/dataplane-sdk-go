@@ -288,7 +288,7 @@ func (dsdk *DataPlaneSDK) Complete(ctx context.Context, dataflowID string) error
 			return e
 		}
 		storeErr := dsdk.Store.Save(ctx, flow)
-		if err != nil {
+		if storeErr != nil {
 			return fmt.Errorf("completing data flow %s: %w", flow.ID, storeErr)
 		}
 		return nil

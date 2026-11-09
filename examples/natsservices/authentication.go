@@ -15,7 +15,7 @@ package natsservices
 import (
 	"errors"
 	"fmt"
-	"github.com/metaform/dataplane-sdk-go/examples/common"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/common"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"

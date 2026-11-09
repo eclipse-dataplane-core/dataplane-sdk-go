@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/metaform/dataplane-sdk-go/examples/streaming"
-	"github.com/metaform/dataplane-sdk-go/examples/streaming-pull-dataplane/launcher"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming-pull-dataplane/launcher"
 )
 
 func main() {

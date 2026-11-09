@@ -48,6 +48,7 @@ func (d *DataPlaneApi) Prepare(w http.ResponseWriter, r *http.Request) {
 
 	if err := prepareMessage.Validate(); err != nil {
 		d.handleError(err, w)
+		return
 	}
 
 	response, err := d.sdk.Prepare(r.Context(), prepareMessage)

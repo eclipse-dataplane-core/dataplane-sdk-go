@@ -18,8 +18,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 	"github.com/go-chi/chi/v5"
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
 )
 
 const (

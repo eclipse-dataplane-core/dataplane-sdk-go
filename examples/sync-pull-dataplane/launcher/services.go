@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metaform/dataplane-sdk-go/examples/sync-pull-dataplane/consumer"
-	"github.com/metaform/dataplane-sdk-go/examples/sync-pull-dataplane/provider"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/consumer"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/provider"
 )
 
 func LaunchServicesAndWait(wg *sync.WaitGroup) {

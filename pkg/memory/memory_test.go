@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metaform/dataplane-sdk-go/pkg/dsdk"
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

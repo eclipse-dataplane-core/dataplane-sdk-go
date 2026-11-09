@@ -15,6 +15,8 @@ package common
 import (
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"strings"
 
@@ -38,6 +40,21 @@ type TokenResponse struct {
 // NewSignalingServer creates and returns a new HTTP server serving the data plane signaling endpoints under /v1.
 func NewSignalingServer(sdk *dsdk.DataPlaneSDK, port int) *http.Server {
 	return &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: dsdk.NewHandler(sdk)}
+}
+
+// StartServer binds the server's address before it returns, so that requests sent right afterwards reach it, and then
+// serves in the background. It exits the program if the address cannot be bound or serving fails.
+func StartServer(server *http.Server, name string) {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		log.Fatalf("%s failed to start: %v", name, err)
+	}
+	log.Printf("%s listening on %s\n", name, server.Addr)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("%s failed: %v", name, err)
+		}
+	}()
 }
 
 // NewDataServer creates and initializes a new HTTP server with a specified port and request handler.

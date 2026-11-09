@@ -64,20 +64,10 @@ func NewDataPlane() (*ConsumerDataPlane, error) {
 func (d *ConsumerDataPlane) Init() {
 	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
 	// Start signaling server
-	go func() {
-		log.Printf("[Consumer Data Plane] Signaling server listening on port %d\n", common.ConsumerSignalingPort)
-		if err := d.signalingServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Consumer signaling server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.signalingServer, "[Consumer Data Plane] Signaling server")
 
 	d.dataServer = common.NewDataServer(common.ConsumerDataPort, "/tokens/", d.getEndpointToken)
-	go func() {
-		log.Printf("[Consumer Data Plane] Data server listening on port %d\n", common.ConsumerDataPort)
-		if err := d.dataServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Provider data server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.dataServer, "[Consumer Data Plane] Data server")
 }
 
 func (d *ConsumerDataPlane) Shutdown(ctx context.Context) {

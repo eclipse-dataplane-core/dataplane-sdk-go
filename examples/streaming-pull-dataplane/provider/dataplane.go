@@ -60,12 +60,7 @@ func (d *ProviderDataPlane) Init() {
 	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
 
 	// Start signaling server
-	go func() {
-		log.Printf("[Provider Data Plane] Signaling server listening on port %d\n", common.ProviderSignalingPort)
-		if err := d.signalingServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Provider signaling server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.signalingServer, "[Provider Data Plane] Signaling server")
 }
 
 func (d *ProviderDataPlane) Shutdown(ctx context.Context) {

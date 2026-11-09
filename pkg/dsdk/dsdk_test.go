@@ -4,697 +4,561 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-func Test_DataPlaneSDK_Start(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{State: Started}, nil
-		},
-	}
+// --- Prepare ---
 
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(nil, ErrNotFound)
-	store.EXPECT().Create(ctx, mock.Anything).Return(nil)
+func Test_Prepare_Pull(t *testing.T) {
+	sdk, store := newTestSDK(t, WithPrepareProcessor(func(_ context.Context, flow *DataFlow, _ *DataPlaneSDK, _ *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		// a pull consumer must not hand out an address; the SDK drops it
+		return &DataFlowStatusMessage{MessageID: "ignored", DataFlowID: "ignored", State: Prepared, DataAddress: newDataAddress()}, nil
+	}))
+	msg := createPrepareMessage(pullProfile)
 
-	callbackURL, _ := url.Parse("http://test.com/callback")
+	response, err := sdk.Prepare(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Equal(t, Prepared, response.State)
+	assert.Equal(t, msg.DataFlowID, response.DataFlowID)
+	assert.NotEmpty(t, response.MessageID)
+	assert.NotEqual(t, "ignored", response.MessageID)
+	assert.Nil(t, response.DataAddress)
 
-	_, _ = dsdk.Start(ctx, DataFlowStartMessage{DataFlowBaseMessage: DataFlowBaseMessage{
-		ProcessID:        "process123",
-		AgreementID:      "agreement123",
-		DatasetID:        "dataset123",
-		ParticipantID:    "participant123",
-		DataspaceContext: "dscontext",
-		CounterPartyID:   "counterparty123",
-		CallbackAddress:  CallbackURL(*callbackURL),
-		TransferType:     TransferType{DestinationType: "test", FlowType: Pull},
-	}})
+	flow := store.get(t, msg.DataFlowID)
+	assert.True(t, flow.Consumer)
+	assert.Equal(t, Prepared, flow.State)
+	assert.Equal(t, msg.Profile, flow.Profile)
+	assert.Equal(t, msg.Claims, flow.Claims)
+	assert.Nil(t, flow.DestinationDataAddress)
 }
 
-func Test_DataPlaneSDK_Start_VerifySdkCallback(t *testing.T) {
+func Test_Prepare_Push_ReturnsDataAddress(t *testing.T) {
+	address := newDataAddress()
+	sdk, store := newTestSDK(t, WithPrepareProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return &DataFlowStatusMessage{State: Prepared, DataAddress: address}, nil
+	}))
+	msg := createPrepareMessage(pushProfile)
+	msg.Labels = []string{"gold"}
+	msg.Metadata = map[string]any{"bucket": "b"}
+
+	response, err := sdk.Prepare(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Equal(t, address, response.DataAddress)
+
+	flow := store.get(t, msg.DataFlowID)
+	assert.Equal(t, address, flow.DestinationDataAddress)
+	assert.Equal(t, []string{"gold"}, flow.Labels)
+	assert.Equal(t, map[string]any{"bucket": "b"}, flow.Metadata)
+}
+
+func Test_Prepare_VerifyProcessorState(t *testing.T) {
 	tests := []struct {
 		state       DataFlowState
 		expectError bool
 	}{
-		{
-			Preparing,
-			true,
-		},
-		{
-			Prepared,
-			true,
-		},
-		{
-			Starting,
-			false,
-		},
-		{
-			Started,
-			false,
-		},
-		{
-			Suspended,
-			true,
-		},
-		{
-			Completed,
-			true,
-		},
-	}
-
-	for _, test := range tests {
-		store := NewMockDataplaneStore(t)
-		dsdk := DataPlaneSDK{
-			Store:      store,
-			TrxContext: &mockTrxContext{},
-			onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-				return &DataFlowResponseMessage{State: test.state}, nil
-			},
-		}
-
-		ctx := context.Background()
-
-		store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(nil, ErrNotFound)
-
-		// create is not invoked if the SDK hook returns an invalid state
-		if !test.expectError {
-			store.EXPECT().Create(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-				return df.State == test.state
-			})).Return(nil)
-		}
-
-		_, err := dsdk.Start(ctx, createStartMessage())
-		if test.expectError {
-			// assert.Nil(t, response)
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-		}
-	}
-}
-
-func Test_DataPlaneSDK_Start_SdkCallbackInvalidState(t *testing.T) {
-	tests := []struct {
-		initialState   DataFlowState
-		sdkTargetState DataFlowState
-		expectError    bool
-	}{
-		{
-			Starting,
-			Starting,
-			false,
-		},
-		{
-			Started,
-			Started,
-			false,
-		},
-		{
-			Prepared,
-			Started,
-			false,
-		},
-		{
-			Prepared,
-			Prepared,
-			true,
-		}}
-
-	for _, test := range tests {
-		store := NewMockDataplaneStore(t)
-		dsdk := DataPlaneSDK{
-			Store:      store,
-			TrxContext: &mockTrxContext{},
-			onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-				return &DataFlowResponseMessage{State: test.sdkTargetState}, nil
-			},
-		}
-
-		ctx := context.Background()
-
-		store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(&DataFlow{
-			State:    test.initialState,
-			Consumer: true, //cover the PREPARED case
-		}, nil)
-
-		// create is not invoked if the SDK hook returns an invalid initialState
-		if !test.expectError {
-			store.EXPECT().Save(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-				return df.State == test.sdkTargetState
-			})).Return(nil)
-		}
-
-		_, err := dsdk.Start(ctx, createStartMessage())
-		if test.expectError {
-			// assert.Nil(t, response)
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-		}
-	}
-}
-
-func Test_DataPlaneSDK_Start_AlreadyStarted(t *testing.T) {
-	states := []DataFlowState{
-		Started,
-		Starting,
-	}
-
-	for _, state := range states {
-		store := NewMockDataplaneStore(t)
-		dsdk := DataPlaneSDK{
-			Store:      store,
-			TrxContext: &mockTrxContext{},
-			onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-				return &DataFlowResponseMessage{State: state}, nil
-			},
-		}
-
-		ctx := context.Background()
-
-		store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(&DataFlow{
-			State: state,
-		}, nil)
-		store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-		_, err := dsdk.Start(ctx, createStartMessage())
-		assert.NoError(t, err)
-	}
-}
-
-func Test_DataPlaneSDK_Start_ConsumerPrepared(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{State: Started}, nil
-		},
-	}
-
-	ctx := context.Background()
-	store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(&DataFlow{
-		State:    Prepared,
-		Consumer: true,
-	}, nil)
-	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-	_, err := dsdk.Start(ctx, createStartMessage())
-	assert.NoError(t, err)
-}
-
-func Test_DataPlaneSDK_StartById_Exists(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{State: Started}, nil
-		},
-	}
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
-		ID:       "process123",
-		State:    Prepared,
-		Consumer: true,
-	}, nil)
-	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
-	assert.NoError(t, err)
-	assert.Equal(t, r.State, Started)
-}
-
-func Test_DataPlaneSDK_StartById_NotExists(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(nil, ErrNotFound)
-
-	_, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
-	assert.ErrorIs(t, err, ErrNotFound)
-}
-
-func Test_DataPlaneSDK_StartById_NotConsumer(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
-		ID:       "process123",
-		State:    Prepared,
-		Consumer: false,
-	}, nil)
-
-	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
-	assert.ErrorIs(t, err, ErrInvalidInput)
-	assert.Nil(t, r)
-}
-
-func Test_DataPlaneSDK_StartById_WrongState(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
-		ID:       "process123",
-		State:    Uninitialized,
-		Consumer: true,
-	}, nil)
-
-	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
-	assert.ErrorIs(t, err, ErrInvalidTransition)
-	assert.Nil(t, r)
-}
-
-func Test_DataPlaneSDK_StartById_AlreadyStarted(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onStart: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{State: Started}, nil
-		},
-	}
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
-		ID:       "process123",
-		State:    Started,
-		Consumer: true,
-	}, nil)
-	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-	r, err := dsdk.StartById(ctx, "process123", createStartByIdMessage())
-	assert.NoError(t, err)
-	assert.Equal(t, r.State, Started)
-}
-
-func Test_DataPlaneSDK_Status(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(&DataFlow{
-		ID:    "process123",
-		State: Preparing,
-	}, nil)
-
-	flow, err := dsdk.Status(ctx, "process123")
-	assert.NoError(t, err)
-	assert.Equal(t, flow.State, Preparing)
-}
-
-func Test_DataPlaneSDK_Status_WhenNotFound(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-
-	ctx := context.Background()
-	store.EXPECT().FindById(ctx, "process123").Return(nil, ErrNotFound)
-
-	flow, err := dsdk.Status(ctx, "process123")
-	assert.ErrorIs(t, err, ErrNotFound)
-	assert.Nil(t, flow)
-}
-
-func Test_DataPlaneSDK_Prepare(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onPrepare: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return &DataFlowResponseMessage{State: Prepared}, nil
-		},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(nil, ErrNotFound)
-	store.EXPECT().Create(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-	response, err := dsdk.Prepare(ctx, createPrepareMessage())
-	assert.NoError(t, err)
-	assert.NotNil(t, response)
-}
-
-func Test_DataPlaneSDK_Prepare_VerifySdkCallback(t *testing.T) {
-	tests := []struct {
-		state       DataFlowState
-		expectError bool
-	}{
-		{
-			Preparing,
-			false,
-		},
-		{
-			Prepared,
-			false,
-		},
-		{
-			Starting,
-			true,
-		},
-		{
-			Started,
-			true,
-		},
-		{
-			Completed,
-			true,
-		},
+		{Initialized, true},
+		{Preparing, false},
+		{Prepared, false},
+		{Starting, true},
+		{Started, true},
+		{Suspended, true},
+		{Completed, true},
+		{Terminated, true},
 	}
 	for _, test := range tests {
-		store := NewMockDataplaneStore(t)
-		dsdk := DataPlaneSDK{
-			Store:      store,
-			TrxContext: &mockTrxContext{},
-			onPrepare: func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowResponseMessage, error) {
-				return &DataFlowResponseMessage{State: test.state}, nil
-			},
-		}
-
-		ctx := context.Background()
-
-		store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(nil, ErrNotFound)
-
-		// create is not invoked if the SDK hook returns an invalid initialState
-		if !test.expectError {
-			store.EXPECT().Create(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-				return df.State == test.state
-			})).Return(nil)
-		}
-
-		_, err := dsdk.Prepare(ctx, createPrepareMessage())
-		if test.expectError {
-			// assert.Nil(t, response)
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-		}
+		t.Run(test.state.String(), func(t *testing.T) {
+			sdk, store := newTestSDK(t, WithPrepareProcessor(stateProcessor(test.state)))
+			msg := createPrepareMessage(pullProfile)
+			response, err := sdk.Prepare(context.Background(), msg)
+			if test.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, response)
+				assert.False(t, store.has(msg.DataFlowID))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.state, store.get(t, msg.DataFlowID).State)
+		})
 	}
 }
 
-func Test_DataPlaneSDK_Prepare_AlreadyPreparing(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onPrepare: func(ctx context.Context, flow *DataFlow, sdk *DataPlaneSDK, opts *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			assert.Equal(t, opts.Duplicate, true)
-			return &DataFlowResponseMessage{State: Prepared}, nil
-		},
-	}
+func Test_Prepare_Duplicate(t *testing.T) {
+	var calls []bool
+	sdk, store := newTestSDK(t, WithPrepareProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		calls = append(calls, options.Duplicate)
+		return &DataFlowStatusMessage{State: Prepared}, nil
+	}))
+	msg := createPrepareMessage(pullProfile)
+	_, err := sdk.Prepare(context.Background(), msg)
+	require.NoError(t, err)
 
-	ctx := context.Background()
-
-	store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(&DataFlow{
-		ID:    "process123",
-		State: Preparing,
-	}, nil)
-	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(nil)
-
-	response, err := dsdk.Prepare(ctx, createPrepareMessage())
-	assert.NoError(t, err)
-	assert.NotNil(t, response)
+	response, err := sdk.Prepare(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Equal(t, Prepared, response.State)
+	assert.Equal(t, []bool{false, true}, calls)
+	assert.Equal(t, Prepared, store.get(t, msg.DataFlowID).State)
 }
 
-func Test_DataPlaneSDK_Prepare_InWrongState(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
+func Test_Prepare_InWrongState(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	msg := createPrepareMessage(pullProfile)
+	store.put(&DataFlow{ID: msg.DataFlowID, State: Started})
 
-	ctx := context.Background()
-
-	store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(&DataFlow{
-		ID:    "process123",
-		State: Started,
-	}, nil)
-	store.AssertNotCalled(t, "Create", mock.AnythingOfType("*dsdk.DataFlow"))
-
-	_, err := dsdk.Prepare(ctx, createPrepareMessage())
+	_, err := sdk.Prepare(context.Background(), msg)
 	assert.ErrorIs(t, err, ErrConflict)
-	assert.ErrorContains(t, err, "is not in PREPARING or PREPARED state")
 }
 
-func Test_DataPlaneSDK_Prepare_SdkCallbackReturnsError(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onPrepare: func(ctx context.Context, flow *DataFlow, sdk *DataPlaneSDK, opts *ProcessorOptions) (*DataFlowResponseMessage, error) {
-			return nil, errors.New("some error")
-		},
+func Test_Prepare_ProcessorError(t *testing.T) {
+	sdk, store := newTestSDK(t, WithPrepareProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return nil, errors.New("boom")
+	}))
+	msg := createPrepareMessage(pullProfile)
+	_, err := sdk.Prepare(context.Background(), msg)
+	assert.ErrorContains(t, err, "boom")
+	assert.False(t, store.has(msg.DataFlowID))
+}
+
+func Test_Prepare_ProcessorReturnsNil(t *testing.T) {
+	sdk, _ := newTestSDK(t, WithPrepareProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		return nil, nil
+	}))
+	_, err := sdk.Prepare(context.Background(), createPrepareMessage(pullProfile))
+	assert.ErrorIs(t, err, errNilResponse)
+}
+
+func Test_Prepare_InvalidMessage(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	msg := createPrepareMessage(pullProfile)
+	msg.Claims = nil
+	_, err := sdk.Prepare(context.Background(), msg)
+	assert.ErrorIs(t, err, ErrValidation)
+}
+
+// --- Start ---
+
+func Test_Start_Pull_ReturnsDataAddress(t *testing.T) {
+	address := newDataAddress()
+	var received *ProcessorOptions
+	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		received = options
+		return &DataFlowStatusMessage{State: Started, DataAddress: address}, nil
+	}))
+	msg := createStartMessage(pullProfile, nil)
+
+	response, err := sdk.Start(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Equal(t, Started, response.State)
+	assert.Equal(t, msg.DataFlowID, response.DataFlowID)
+	assert.NotEmpty(t, response.MessageID)
+	assert.Equal(t, address, response.DataAddress)
+	assert.False(t, received.Duplicate)
+	assert.Nil(t, received.DataAddress)
+
+	flow := store.get(t, msg.DataFlowID)
+	assert.False(t, flow.Consumer)
+	assert.Equal(t, Started, flow.State)
+	assert.Equal(t, address, flow.SourceDataAddress)
+}
+
+func Test_Start_Push_ReceivesDataAddress(t *testing.T) {
+	address := newDataAddress()
+	var received *ProcessorOptions
+	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		received = options
+		return &DataFlowStatusMessage{State: Started, DataAddress: newDataAddress()}, nil
+	}))
+	msg := createStartMessage(pushProfile, address)
+
+	response, err := sdk.Start(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Nil(t, response.DataAddress, "a push provider must not return a data address")
+	assert.Equal(t, address, received.DataAddress)
+	assert.Equal(t, address, store.get(t, msg.DataFlowID).DestinationDataAddress)
+}
+
+func Test_Start_DataAddressRules(t *testing.T) {
+	tests := map[string]struct {
+		profile string
+		address *DataAddress
+	}{
+		"pull with data address":    {pullProfile, newDataAddress()},
+		"push without data address": {pushProfile, nil},
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(mock.Anything, mock.AnythingOfType("string")).Return(nil, ErrNotFound)
-	store.AssertNotCalled(t, "Create", mock.AnythingOfType("*dsdk.DataFlow"))
-
-	_, err := dsdk.Prepare(ctx, createPrepareMessage())
-	assert.ErrorContains(t, err, "processing data flow process123: some error")
-}
-
-func Test_DataPlaneSDK_Terminate(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onTerminate: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			sdk, store := newTestSDK(t)
+			msg := createStartMessage(tc.profile, tc.address)
+			_, err := sdk.Start(context.Background(), msg)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			assert.False(t, store.has(msg.DataFlowID))
+		})
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started,
-	}, nil)
-
-	store.EXPECT().Save(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-		return df.State == Terminated
-	})).Return(nil)
-
-	err := dsdk.Terminate(ctx, "flow123", "")
-
-	assert.NoError(t, err)
 }
 
-func Test_DataPlaneSDK_Terminate_NotFound(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onTerminate: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
+func Test_Start_VerifyProcessorState(t *testing.T) {
+	tests := []struct {
+		state       DataFlowState
+		expectError bool
+	}{
+		{Preparing, true},
+		{Prepared, true},
+		{Starting, false},
+		{Started, false},
+		{Suspended, true},
+		{Completed, true},
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(nil, ErrNotFound)
-	err := dsdk.Terminate(ctx, "flow123", "")
-
-	assert.ErrorContains(t, err, "not found")
-}
-
-func Test_DataPlaneSDK_Terminate_AlreadyTerminated(t *testing.T) {
-
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onTerminate: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
+	for _, test := range tests {
+		t.Run(test.state.String(), func(t *testing.T) {
+			sdk, store := newTestSDK(t, WithStartProcessor(stateProcessor(test.state)))
+			msg := createStartMessage(pullProfile, nil)
+			_, err := sdk.Start(context.Background(), msg)
+			if test.expectError {
+				assert.Error(t, err)
+				assert.False(t, store.has(msg.DataFlowID))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.state, store.get(t, msg.DataFlowID).State)
+		})
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Terminated, // already terminated
-	}, nil)
-
-	// no transition and no save call expected
-
-	err := dsdk.Terminate(ctx, "flow123", "")
-
-	assert.NoError(t, err)
 }
 
-func Test_DataPlaneSDK_Terminate_SdkCallbackError(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onTerminate: func(ctx context.Context, flow *DataFlow) error {
-			return fmt.Errorf("some error")
-		},
+func Test_Start_ExistingFlow_Conflict(t *testing.T) {
+	for _, state := range []DataFlowState{Prepared, Starting, Started, Suspended, Completed, Terminated} {
+		t.Run(state.String(), func(t *testing.T) {
+			sdk, store := newTestSDK(t)
+			msg := createStartMessage(pullProfile, nil)
+			store.put(&DataFlow{ID: msg.DataFlowID, State: state, Consumer: state == Prepared})
+
+			_, err := sdk.Start(context.Background(), msg)
+			assert.ErrorIs(t, err, ErrConflict)
+			assert.Equal(t, state, store.get(t, msg.DataFlowID).State)
+		})
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started,
-	}, nil)
-
-	err := dsdk.Terminate(ctx, "flow123", "")
-
-	assert.ErrorContains(t, err, "some error")
 }
 
-func Test_DataPlaneSDK_Suspend(t *testing.T) {
+func Test_Start_StoreError(t *testing.T) {
 	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onSuspend: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
+	sdk := newMockSDK(store)
+	msg := createStartMessage(pullProfile, nil)
+	store.EXPECT().FindById(mock.Anything, msg.DataFlowID).Return(nil, errors.New("db down"))
 
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started,
-	}, nil)
-
-	store.EXPECT().Save(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-		return df.State == Suspended
-	})).Return(nil)
-
-	err := dsdk.Suspend(ctx, "flow123", "")
-
-	assert.NoError(t, err)
+	_, err := sdk.Start(context.Background(), msg)
+	assert.ErrorContains(t, err, "db down")
 }
 
-func Test_DataPlaneSDK_Suspend_NotFound(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onSuspend: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
+// --- Started ---
 
-	ctx := context.Background()
+func Test_Started_Pull(t *testing.T) {
+	address := newDataAddress()
+	var received *ProcessorOptions
+	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		received = options
+		return &DataFlowStatusMessage{State: Started}, nil
+	}))
+	store.put(consumerFlow("flow", pullProfile, Prepared))
 
-	store.EXPECT().FindById(ctx, "flow123").Return(nil, ErrNotFound)
-	err := dsdk.Suspend(ctx, "flow123", "")
+	response, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m", DataAddress: address})
+	require.NoError(t, err)
+	assert.Equal(t, Started, response.State)
+	assert.Equal(t, "flow", response.DataFlowID)
+	assert.NotEmpty(t, response.MessageID)
+	assert.Nil(t, response.DataAddress)
+	assert.Equal(t, address, received.DataAddress)
+	assert.False(t, received.Duplicate)
 
-	assert.ErrorContains(t, err, "not found")
+	flow := store.get(t, "flow")
+	assert.Equal(t, Started, flow.State)
+	assert.Equal(t, address, flow.SourceDataAddress)
 }
 
-func Test_DataPlaneSDK_Suspend_AlreadySuspended(t *testing.T) {
+func Test_Started_Push(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	flow := consumerFlow("flow", pushProfile, Prepared)
+	flow.DestinationDataAddress = newDataAddress()
+	store.put(flow)
 
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onTerminate: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Suspended, // already suspended
-	}, nil)
-
-	// no transition and no save call expected
-
-	err := dsdk.Suspend(ctx, "flow123", "")
-
-	assert.NoError(t, err)
+	response, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.Equal(t, Started, response.State)
+	assert.Nil(t, response.DataAddress)
 }
 
-func Test_DataPlaneSDK_Suspend_SdkCallbackError(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onSuspend: func(ctx context.Context, flow *DataFlow) error {
-			return fmt.Errorf("some error")
-		},
+func Test_Started_DataAddressRules(t *testing.T) {
+	tests := map[string]struct {
+		profile string
+		address *DataAddress
+	}{
+		"pull without data address": {pullProfile, nil},
+		"push with data address":    {pushProfile, newDataAddress()},
 	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started,
-	}, nil)
-
-	err := dsdk.Suspend(ctx, "flow123", "")
-
-	assert.ErrorContains(t, err, "some error")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			sdk, store := newTestSDK(t)
+			store.put(consumerFlow("flow", tc.profile, Prepared))
+			_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m", DataAddress: tc.address})
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			assert.Equal(t, Prepared, store.get(t, "flow").State)
+		})
+	}
 }
+
+func Test_Started_Duplicate(t *testing.T) {
+	var received *ProcessorOptions
+	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		received = options
+		return &DataFlowStatusMessage{State: Started}, nil
+	}))
+	store.put(consumerFlow("flow", pushProfile, Started))
+
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.True(t, received.Duplicate)
+}
+
+func Test_Started_WrongState(t *testing.T) {
+	for _, state := range []DataFlowState{Initialized, Preparing, Suspended, Completed, Terminated} {
+		t.Run(state.String(), func(t *testing.T) {
+			sdk, store := newTestSDK(t)
+			store.put(consumerFlow("flow", pushProfile, state))
+			_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+			assert.ErrorIs(t, err, ErrInvalidTransition)
+		})
+	}
+}
+
+func Test_Started_NotConsumer(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", Profile: pushProfile, State: Prepared})
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+func Test_Started_NotFound(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func Test_Started_RequiresMessageID(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{})
+	assert.ErrorIs(t, err, ErrValidation)
+}
+
+// --- Suspend / Resume ---
+
+func Test_Suspend(t *testing.T) {
+	var suspended bool
+	sdk, store := newTestSDK(t, WithSuspendProcessor(func(context.Context, *DataFlow) error {
+		suspended = true
+		return nil
+	}))
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Started})
+
+	require.NoError(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m", Reason: "maintenance"}))
+	assert.True(t, suspended)
+	flow := store.get(t, "flow")
+	assert.Equal(t, Suspended, flow.State)
+	assert.Equal(t, SuspendedByRemote, flow.SuspendedBy)
+	assert.Equal(t, "maintenance", flow.ErrorDetail)
+}
+
+func Test_Suspend_AlreadySuspended(t *testing.T) {
+	sdk, store := newTestSDK(t, WithSuspendProcessor(func(context.Context, *DataFlow) error {
+		t.Fatal("processor must not be invoked for a duplicate")
+		return nil
+	}))
+	store.put(&DataFlow{ID: "flow", State: Suspended, SuspendedBy: SuspendedByRemote})
+	assert.NoError(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m"}))
+}
+
+func Test_Suspend_WrongState(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", State: Prepared})
+	assert.ErrorIs(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m"}), ErrInvalidTransition)
+}
+
+func Test_Suspend_ProcessorError(t *testing.T) {
+	sdk, store := newTestSDK(t, WithSuspendProcessor(func(context.Context, *DataFlow) error {
+		return errors.New("boom")
+	}))
+	store.put(&DataFlow{ID: "flow", State: Started})
+	assert.ErrorContains(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m"}), "boom")
+	assert.Equal(t, Started, store.get(t, "flow").State)
+}
+
+func Test_Suspend_NotFound(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m"}), ErrNotFound)
+}
+
+func Test_Suspend_RequiresMessageID(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{}), ErrValidation)
+}
+
+func Test_Resume_ProviderPull_ReturnsDataAddress(t *testing.T) {
+	address := newDataAddress()
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Suspended, SuspendedBy: SuspendedByRemote, SourceDataAddress: address})
+
+	response, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.Equal(t, Started, response.State)
+	assert.Equal(t, "flow", response.DataFlowID)
+	assert.Equal(t, address, response.DataAddress)
+
+	flow := store.get(t, "flow")
+	assert.Equal(t, Started, flow.State)
+	assert.Equal(t, SuspendedByNone, flow.SuspendedBy)
+}
+
+func Test_Resume_ProviderPush_ReceivesDataAddress(t *testing.T) {
+	address := newDataAddress()
+	var received *ProcessorOptions
+	sdk, store := newTestSDK(t, WithResumeProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		received = options
+		return &DataFlowStatusMessage{State: Started}, nil
+	}))
+	store.put(&DataFlow{ID: "flow", Profile: pushProfile, State: Suspended, SuspendedBy: SuspendedByRemote})
+
+	response, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m", DataAddress: address})
+	require.NoError(t, err)
+	assert.Nil(t, response.DataAddress)
+	assert.Equal(t, address, received.DataAddress)
+	assert.Equal(t, address, store.get(t, "flow").DestinationDataAddress)
+}
+
+func Test_Resume_SuspendedLocally(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Suspended, SuspendedBy: SuspendedByLocal})
+
+	_, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m"})
+	assert.ErrorIs(t, err, ErrInvalidTransition)
+	assert.Equal(t, Suspended, store.get(t, "flow").State)
+}
+
+func Test_Resume_WrongState(t *testing.T) {
+	for _, state := range []DataFlowState{Prepared, Started, Completed, Terminated} {
+		t.Run(state.String(), func(t *testing.T) {
+			sdk, store := newTestSDK(t)
+			store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: state})
+			_, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m"})
+			assert.ErrorIs(t, err, ErrInvalidTransition)
+		})
+	}
+}
+
+func Test_Resume_ProcessorInvalidState(t *testing.T) {
+	sdk, store := newTestSDK(t, WithResumeProcessor(stateProcessor(Suspended)))
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Suspended, SuspendedBy: SuspendedByRemote})
+	_, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m"})
+	assert.Error(t, err)
+	assert.Equal(t, Suspended, store.get(t, "flow").State)
+}
+
+func Test_SuspendThenResume(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Started})
+	require.NoError(t, sdk.Suspend(context.Background(), "flow", DataFlowSuspendMessage{MessageID: "m1"}))
+	_, err := sdk.Resume(context.Background(), "flow", DataFlowResumeMessage{MessageID: "m2"})
+	require.NoError(t, err)
+	assert.Equal(t, Started, store.get(t, "flow").State)
+}
+
+// --- Terminate ---
+
+func Test_Terminate(t *testing.T) {
+	for _, state := range []DataFlowState{Initialized, Preparing, Prepared, Starting, Started, Suspended} {
+		t.Run(state.String(), func(t *testing.T) {
+			var terminated bool
+			sdk, store := newTestSDK(t, WithTerminateProcessor(func(context.Context, *DataFlow) error {
+				terminated = true
+				return nil
+			}))
+			store.put(&DataFlow{ID: "flow", State: state})
+			require.NoError(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{MessageID: "m", Reason: "violation"}))
+			assert.True(t, terminated)
+			flow := store.get(t, "flow")
+			assert.Equal(t, Terminated, flow.State)
+			assert.Equal(t, "violation", flow.ErrorDetail)
+		})
+	}
+}
+
+func Test_Terminate_Completed(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", State: Completed})
+	assert.ErrorIs(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{MessageID: "m"}), ErrInvalidTransition)
+	assert.Equal(t, Completed, store.get(t, "flow").State)
+}
+
+func Test_Terminate_AlreadyTerminated(t *testing.T) {
+	sdk, store := newTestSDK(t, WithTerminateProcessor(func(context.Context, *DataFlow) error {
+		t.Fatal("processor must not be invoked for a duplicate")
+		return nil
+	}))
+	store.put(&DataFlow{ID: "flow", State: Terminated})
+	assert.NoError(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{MessageID: "m"}))
+}
+
+func Test_Terminate_ProcessorError(t *testing.T) {
+	sdk, store := newTestSDK(t, WithTerminateProcessor(func(context.Context, *DataFlow) error {
+		return errors.New("boom")
+	}))
+	store.put(&DataFlow{ID: "flow", State: Started})
+	assert.ErrorContains(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{MessageID: "m"}), "boom")
+	assert.Equal(t, Started, store.get(t, "flow").State)
+}
+
+func Test_Terminate_NotFound(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{MessageID: "m"}), ErrNotFound)
+}
+
+func Test_Terminate_RequiresMessageID(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Terminate(context.Background(), "flow", DataFlowTerminateMessage{}), ErrValidation)
+}
+
+// --- Status ---
+
+func Test_Status(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow", State: Started})
+	flow, err := sdk.Status(context.Background(), "flow")
+	require.NoError(t, err)
+	assert.Equal(t, Started, flow.State)
+
+	_, err = sdk.Status(context.Background(), "unknown")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// --- Complete ---
 
 func Test_DataPlaneSDK_Completed(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onComplete: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
+	var completed bool
+	sdk, store := newTestSDK(t, WithCompleteProcessor(func(context.Context, *DataFlow) error {
+		completed = true
+		return nil
+	}))
+	store.put(&DataFlow{ID: "flow123", State: Started})
 
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started, // already suspended
-	}, nil)
-	store.EXPECT().Save(ctx, mock.MatchedBy(func(df *DataFlow) bool {
-		return df.State == Completed
-	})).Return(nil)
-
-	err := dsdk.Complete(ctx, "flow123")
-
-	assert.NoError(t, err)
+	require.NoError(t, sdk.Complete(context.Background(), "flow123"))
+	assert.True(t, completed)
+	assert.Equal(t, Completed, store.get(t, "flow123").State)
 }
 
 func Test_DataPlaneSDK_Completed_StoreError(t *testing.T) {
 	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onComplete: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
-
+	sdk := newMockSDK(store)
 	ctx := context.Background()
 
 	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
@@ -703,122 +567,138 @@ func Test_DataPlaneSDK_Completed_StoreError(t *testing.T) {
 	}, nil)
 	store.EXPECT().Save(ctx, mock.AnythingOfType("*dsdk.DataFlow")).Return(fmt.Errorf("store error"))
 
-	err := dsdk.Complete(ctx, "flow123")
+	err := sdk.Complete(ctx, "flow123")
 
 	assert.ErrorContains(t, err, "store error")
 }
 
 func Test_DataPlaneSDK_Completed_AlreadyCompleted(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Completed, // already suspended
-	}, nil)
-
-	err := dsdk.Complete(ctx, "flow123")
-
-	assert.NoError(t, err)
+	sdk, store := newTestSDK(t, WithCompleteProcessor(func(context.Context, *DataFlow) error {
+		t.Fatal("processor must not be invoked for a duplicate")
+		return nil
+	}))
+	store.put(&DataFlow{ID: "flow123", State: Completed})
+	assert.NoError(t, sdk.Complete(context.Background(), "flow123"))
 }
 
-func Test_DataPlaneSDK_Completed_SdkError(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onComplete: func(ctx context.Context, flow *DataFlow) error {
-			return fmt.Errorf("some error")
-		},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Started, // already suspended
-	}, nil)
-
-	err := dsdk.Complete(ctx, "flow123")
-
-	assert.ErrorContains(t, err, "some error")
+func Test_DataPlaneSDK_Completed_ProcessorError(t *testing.T) {
+	sdk, store := newTestSDK(t, WithCompleteProcessor(func(context.Context, *DataFlow) error {
+		return fmt.Errorf("some error")
+	}))
+	store.put(&DataFlow{ID: "flow123", State: Started})
+	assert.ErrorContains(t, sdk.Complete(context.Background(), "flow123"), "some error")
+	assert.Equal(t, Started, store.get(t, "flow123").State)
 }
 
 func Test_DataPlaneSDK_Completed_WrongState(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onComplete: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(&DataFlow{
-		ID:    "flow123",
-		State: Terminated,
-	}, nil)
-
-	err := dsdk.Complete(ctx, "flow123")
-
-	assert.ErrorIs(t, err, ErrInvalidTransition)
+	sdk, store := newTestSDK(t)
+	store.put(&DataFlow{ID: "flow123", State: Terminated})
+	assert.ErrorIs(t, sdk.Complete(context.Background(), "flow123"), ErrInvalidTransition)
 }
 
-func Test_DataPlaneSDK_NotFound(t *testing.T) {
-	store := NewMockDataplaneStore(t)
-	dsdk := DataPlaneSDK{
-		Store:      store,
-		TrxContext: &mockTrxContext{},
-		onComplete: func(ctx context.Context, flow *DataFlow) error {
-			return nil
-		},
-	}
-
-	ctx := context.Background()
-
-	store.EXPECT().FindById(ctx, "flow123").Return(nil, ErrNotFound)
-
-	err := dsdk.Complete(ctx, "flow123")
-
-	assert.ErrorIs(t, err, ErrNotFound)
+func Test_DataPlaneSDK_Completed_NotFound(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Complete(context.Background(), "flow123"), ErrNotFound)
 }
 
-func createPrepareMessage() DataFlowPrepareMessage {
-	return DataFlowPrepareMessage{DataFlowBaseMessage: createBaseMessage()}
+func Test_DataPlaneSDK_Completed_EmptyID(t *testing.T) {
+	sdk, _ := newTestSDK(t)
+	assert.ErrorIs(t, sdk.Complete(context.Background(), ""), ErrInvalidInput)
 }
-func createStartMessage() DataFlowStartMessage {
-	return DataFlowStartMessage{
-		DataFlowBaseMessage: createBaseMessage(),
-	}
+
+// --- helpers ---
+
+func newTestSDK(t *testing.T, options ...DataPlaneSDKOption) (*DataPlaneSDK, *fakeStore) {
+	t.Helper()
+	store := &fakeStore{flows: map[string]*DataFlow{}}
+	sdk, err := NewDataPlaneSDK(append([]DataPlaneSDKOption{WithStore(store), WithTransactionContext(&mockTrxContext{})}, options...)...)
+	require.NoError(t, err)
+	return sdk, store
 }
-func createBaseMessage() DataFlowBaseMessage {
-	return DataFlowBaseMessage{
-		MessageID:        uuid.New().String(),
-		ParticipantID:    uuid.New().String(),
-		CounterPartyID:   uuid.New().String(),
-		DataspaceContext: uuid.New().String(),
-		ProcessID:        "process123",
-		AgreementID:      uuid.New().String(),
-		DatasetID:        uuid.New().String(),
-		CallbackAddress:  CallbackURL{Scheme: "http", Host: "test.com", Path: "/callback"},
-		TransferType: TransferType{
-			DestinationType: "test-type",
-			FlowType:        Pull,
-		},
-		DataAddress: &DataAddress{},
-	}
+
+func newMockSDK(store DataplaneStore) *DataPlaneSDK {
+	sdk, _ := NewDataPlaneSDK(WithStore(store), WithTransactionContext(&mockTrxContext{}))
+	return sdk
 }
-func createStartByIdMessage() DataFlowStartedNotificationMessage {
-	return DataFlowStartedNotificationMessage{
-		DataAddress: &DataAddress{},
+
+func consumerFlow(id string, profile string, state DataFlowState) *DataFlow {
+	return &DataFlow{ID: id, Consumer: true, Profile: profile, State: state}
+}
+
+func createPrepareMessage(profile string) DataFlowPrepareMessage {
+	base := newBaseMessage()
+	base.Profile = profile
+	return DataFlowPrepareMessage{DataFlowBaseMessage: base}
+}
+
+func createStartMessage(profile string, address *DataAddress) DataFlowStartMessage {
+	base := newBaseMessage()
+	base.Profile = profile
+	base.DataFlowID = uuid.NewString()
+	return DataFlowStartMessage{DataFlowBaseMessage: base, DataAddress: address}
+}
+
+// fakeStore is a minimal DataplaneStore that stores copies of the flows.
+type fakeStore struct {
+	mu    sync.Mutex
+	flows map[string]*DataFlow
+}
+
+func (s *fakeStore) FindById(_ context.Context, id string) (*DataFlow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	flow, ok := s.flows[id]
+	if !ok {
+		return nil, ErrNotFound
 	}
+	return flow.Copy(), nil
+}
+
+func (s *fakeStore) Create(_ context.Context, flow *DataFlow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.flows[flow.ID]; ok {
+		return ErrConflict
+	}
+	s.flows[flow.ID] = flow.Copy()
+	return nil
+}
+
+func (s *fakeStore) Save(_ context.Context, flow *DataFlow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.flows[flow.ID]; !ok {
+		return ErrNotFound
+	}
+	s.flows[flow.ID] = flow.Copy()
+	return nil
+}
+
+func (s *fakeStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.flows, id)
+	return nil
+}
+
+func (s *fakeStore) put(flow *DataFlow) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flows[flow.ID] = flow.Copy()
+}
+
+func (s *fakeStore) has(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.flows[id]
+	return ok
+}
+
+func (s *fakeStore) get(t *testing.T, id string) *DataFlow {
+	t.Helper()
+	flow, err := s.FindById(context.Background(), id)
+	require.NoError(t, err)
+	return flow
 }
 
 type mockTrxContext struct {

@@ -438,3 +438,45 @@ func TestInMemoryStore_DataIsolation(t *testing.T) {
 		assert.Equal(t, dsdk.Started, storedFlow.State)
 	})
 }
+
+func TestInMemoryStore_DeepCopiesNewFields(t *testing.T) {
+	store := NewInMemoryStore()
+	ctx := context.Background()
+
+	flow := &dsdk.DataFlow{
+		ID:             "deep-copy",
+		Profile:        "https://w3id.org/dspace-sig/profile/http-pull",
+		Claims:         map[string]any{"membership": "active"},
+		Labels:         []string{"gold"},
+		Metadata:       map[string]any{"region": "westeurope"},
+		ControlPlaneID: "cp-1",
+		SuspendedBy:    dsdk.SuspendedByRemote,
+		SourceDataAddress: &dsdk.DataAddress{
+			EndpointType:       "https://w3id.org/idsa/v4.1/HTTP",
+			EndpointProperties: []dsdk.EndpointProperty{{Name: "authorization", Value: "token"}},
+		},
+	}
+	require.NoError(t, store.Create(ctx, flow))
+
+	// mutating the caller's instance must not change the stored flow
+	flow.Claims["membership"] = "revoked"
+	flow.Labels[0] = "changed"
+	flow.Metadata["region"] = "changed"
+	flow.SourceDataAddress.EndpointProperties[0].Value = "changed"
+
+	found, err := store.FindById(ctx, "deep-copy")
+	require.NoError(t, err)
+	assert.Equal(t, "active", found.Claims["membership"])
+	assert.Equal(t, []string{"gold"}, found.Labels)
+	assert.Equal(t, "westeurope", found.Metadata["region"])
+	assert.Equal(t, "cp-1", found.ControlPlaneID)
+	assert.Equal(t, dsdk.SuspendedByRemote, found.SuspendedBy)
+	value, _ := found.SourceDataAddress.Property("authorization")
+	assert.Equal(t, "token", value)
+
+	// mutating a returned instance must not change the stored flow either
+	found.Labels[0] = "changed"
+	again, err := store.FindById(ctx, "deep-copy")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gold"}, again.Labels)
+}

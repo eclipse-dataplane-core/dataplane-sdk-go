@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"reflect"
 	"time"
 
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
@@ -22,12 +23,17 @@ func NewStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+const columns = `id, version, consumer, agreement_id, dataset_id, runtime_id, participant_id, dataspace_context,
+	counterparty_id, profile, claims, labels, metadata, control_plane_id, suspended_by, source_data_address,
+	dest_data_address, state, state_count, state_timestamp_ms, error_detail, created_at_ms, updated_at_ms`
+
 func (p PostgresStore) FindById(ctx context.Context, id string) (*dsdk.DataFlow, error) {
-	query := `SELECT * FROM data_flows WHERE id = $1`
+	query := `SELECT ` + columns + ` FROM data_flows WHERE id = $1`
 
 	var df dsdk.DataFlow
-	var callbackAddressJson string
-	var sourceDataAddressJson, destDataAddressJson *string
+	var claims, labels, metadata, sourceDataAddress, destDataAddress []byte
+	var errorDetail sql.NullString
+	var suspendedBy string
 
 	err := p.db.QueryRowContext(ctx, query, id).Scan(
 		&df.ID,
@@ -39,15 +45,18 @@ func (p PostgresStore) FindById(ctx context.Context, id string) (*dsdk.DataFlow,
 		&df.ParticipantID,
 		&df.DataspaceContext,
 		&df.CounterPartyID,
-		&callbackAddressJson,
-		&df.TransferType.DestinationType,
-		&df.TransferType.FlowType,
-		&sourceDataAddressJson,
-		&destDataAddressJson,
+		&df.Profile,
+		&claims,
+		&labels,
+		&metadata,
+		&df.ControlPlaneID,
+		&suspendedBy,
+		&sourceDataAddress,
+		&destDataAddress,
 		&df.State,
 		&df.StateCount,
 		&df.StateTimestamp,
-		&df.ErrorDetail,
+		&errorDetail,
 		&df.CreatedAt,
 		&df.UpdatedAt,
 	)
@@ -58,19 +67,20 @@ func (p PostgresStore) FindById(ctx context.Context, id string) (*dsdk.DataFlow,
 	if err != nil {
 		return nil, err
 	}
+	df.SuspendedBy = dsdk.SuspendedBy(suspendedBy)
+	df.ErrorDetail = errorDetail.String
 
-	if err := df.CallbackAddress.UnmarshalJSON([]byte(callbackAddressJson)); err != nil {
-		return nil, err
-	}
-
-	if sourceDataAddressJson != nil {
-		if err := json.Unmarshal([]byte(*sourceDataAddressJson), &df.SourceDataAddress); err != nil {
-			return nil, err
-		}
-	}
-
-	if destDataAddressJson != nil {
-		if err := json.Unmarshal([]byte(*destDataAddressJson), &df.DestinationDataAddress); err != nil {
+	for _, field := range []struct {
+		data   []byte
+		target any
+	}{
+		{claims, &df.Claims},
+		{labels, &df.Labels},
+		{metadata, &df.Metadata},
+		{sourceDataAddress, &df.SourceDataAddress},
+		{destDataAddress, &df.DestinationDataAddress},
+	} {
+		if err := fromJson(field.data, field.target); err != nil {
 			return nil, err
 		}
 	}
@@ -84,7 +94,7 @@ func (p PostgresStore) Create(ctx context.Context, flow *dsdk.DataFlow) error {
 	}
 	query := `
 		INSERT INTO data_flows (
-			id, 
+			id,
 		    consumer,
 		    agreement_id,
 		    dataset_id,
@@ -92,23 +102,24 @@ func (p PostgresStore) Create(ctx context.Context, flow *dsdk.DataFlow) error {
 		    participant_id,
 		    dataspace_context,
 		    counterparty_id,
-		    callback_address,
-		    transfer_type_dest,
-		    transfer_type_flowtype,
+		    profile,
+		    claims,
+		    labels,
+		    metadata,
+		    control_plane_id,
+		    suspended_by,
 		    source_data_address,
 		    dest_data_address,
 		    state,
+		    state_count,
 		    state_timestamp_ms,
 		    error_detail,
 		    created_at_ms,
 		    updated_at_ms
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
 
-	cba, err := flow.CallbackAddress.MarshalJSON()
-	if err != nil {
-		return err
-	}
-	_, err = p.db.ExecContext(ctx, query,
+	now := time.Now().UnixMilli()
+	_, err := p.db.ExecContext(ctx, query,
 		flow.ID,
 		flow.Consumer,
 		flow.AgreementID,
@@ -117,16 +128,20 @@ func (p PostgresStore) Create(ctx context.Context, flow *dsdk.DataFlow) error {
 		flow.ParticipantID,
 		flow.DataspaceContext,
 		flow.CounterPartyID,
-		cba,
-		flow.TransferType.DestinationType,
-		flow.TransferType.FlowType,
+		flow.Profile,
+		toJson(flow.Claims),
+		toJson(flow.Labels),
+		toJson(flow.Metadata),
+		flow.ControlPlaneID,
+		string(flow.SuspendedBy),
 		toJson(flow.SourceDataAddress),
 		toJson(flow.DestinationDataAddress),
 		flow.State,
-		time.Now().UnixMilli(),
+		flow.StateCount,
+		now,
 		flow.ErrorDetail,
-		time.Now().UnixMilli(),
-		time.Now().UnixMilli(),
+		now,
+		now,
 	)
 
 	if err != nil {
@@ -147,7 +162,7 @@ func (p PostgresStore) Save(ctx context.Context, flow *dsdk.DataFlow) error {
 		// update
 		query := `
 		UPDATE data_flows
-		SET 
+		SET
 		    consumer = $1,
 		    agreement_id = $2,
 		    dataset_id = $3,
@@ -155,16 +170,20 @@ func (p PostgresStore) Save(ctx context.Context, flow *dsdk.DataFlow) error {
 		    participant_id = $5,
 		    dataspace_context = $6,
 		    counterparty_id = $7,
-		    callback_address = $8,
-		    transfer_type_dest = $9,
-		    transfer_type_flowtype = $10,
-		    source_data_address = $11,
-		    dest_data_address = $12,
-		    state = $13,
-			state_timestamp_ms = $14,
-		    error_detail = $15,
-		    updated_at_ms = $16
-		WHERE id = $17`
+		    profile = $8,
+		    claims = $9,
+		    labels = $10,
+		    metadata = $11,
+		    control_plane_id = $12,
+		    suspended_by = $13,
+		    source_data_address = $14,
+		    dest_data_address = $15,
+		    state = $16,
+		    state_count = $17,
+		    state_timestamp_ms = $18,
+		    error_detail = $19,
+		    updated_at_ms = $20
+		WHERE id = $21`
 
 		_, err := p.db.ExecContext(ctx, query,
 			flow.Consumer,
@@ -174,12 +193,16 @@ func (p PostgresStore) Save(ctx context.Context, flow *dsdk.DataFlow) error {
 			flow.ParticipantID,
 			flow.DataspaceContext,
 			flow.CounterPartyID,
-			toJson(flow.CallbackAddress),
-			flow.TransferType.DestinationType,
-			flow.TransferType.FlowType,
+			flow.Profile,
+			toJson(flow.Claims),
+			toJson(flow.Labels),
+			toJson(flow.Metadata),
+			flow.ControlPlaneID,
+			string(flow.SuspendedBy),
 			toJson(flow.SourceDataAddress),
 			toJson(flow.DestinationDataAddress),
 			flow.State,
+			flow.StateCount,
 			flow.StateTimestamp,
 			flow.ErrorDetail,
 			time.Now().UnixMilli(),
@@ -208,7 +231,12 @@ func (p PostgresStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// toJson marshals v into a JSONB value; nil maps, slices and pointers are stored as SQL NULL.
 func toJson(v any) *string {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || ((rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Pointer) && rv.IsNil()) {
+		return nil
+	}
 	j, err := json.Marshal(v)
 	if err != nil {
 		log.Fatalf("Failed to marshal: %v", err)
@@ -216,6 +244,13 @@ func toJson(v any) *string {
 	}
 	s := string(j)
 	return &s
+}
+
+func fromJson(data []byte, target any) error {
+	if len(data) == 0 {
+		return nil
+	}
+	return json.Unmarshal(data, target)
 }
 
 func exists(db *sql.DB, ctx context.Context, id string) bool {

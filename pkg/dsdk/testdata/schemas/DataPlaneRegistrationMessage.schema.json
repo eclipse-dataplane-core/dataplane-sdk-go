@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "DataPlaneRegistrationMessage",
+  "required": ["dataplaneId", "endpoint", "profiles", "authorization"],
+  "properties": {
+    "dataplaneId": {
+      "type": "string",
+      "description": "The unique identifier of the data plane",
+      "examples": ["dataplane-64345"]
+    },
+    "endpoint": {
+      "type": "string",
+      "description": "The base URL of the data plane's Signaling API endpoint",
+      "format": "uri",
+      "examples": ["https://dataplane.example.com/api/v1/signaling"]
+    },
+    "profiles": {
+      "type": "array",
+      "description": "A list of transfer profiles supported by the data plane",
+      "items": {
+        "type": "string",
+        "description": "The flow transfer profile",
+        "examples": ["com.test.http-pull"]
+      },
+      "examples": [
+        ["com.test.http-pull", "com.test.mqtt-push-com.test.mqtt"]
+      ]
+    },
+    "authorization": {
+      "$ref": "https://w3id.org/dspace-sig/v1.0/AuthorizationEntry.schema.json",
+      "description": "an authorization object"
+    },
+    "labels": {
+      "type": "array",
+      "description": "an array of one of more strings corresponding to labels associated with the data plane",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["label1", "label2"]
+      ]
+    }
+  }
+}

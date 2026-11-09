@@ -15,6 +15,8 @@ package dsdk
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDataFlow_transitionToPreparing(t *testing.T) {
@@ -23,8 +25,8 @@ func TestDataFlow_transitionToPreparing(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"valid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"valid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    false,
 		},
 		"idempotent transition from Preparing": {
@@ -126,8 +128,8 @@ func TestDataFlow_transitionToPrepared(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"valid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"valid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    false,
 		},
 		"valid transition from Preparing": {
@@ -228,8 +230,8 @@ func TestDataFlow_transitionToStarting(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"valid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"valid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    false,
 		},
 		"invalid transition from Preparing": {
@@ -330,8 +332,8 @@ func TestDataFlow_transitionToStarted(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"valid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"valid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    false,
 		},
 		"invalid transition from Prepared": {
@@ -356,9 +358,10 @@ func TestDataFlow_transitionToStarted(t *testing.T) {
 			expectErr:    true,
 			expectedErr:  "invalid transition: cannot transition from COMPLETED to STARTED",
 		},
-		"valid transition from Suspended": {
+		"invalid transition from Suspended (use TransitionToResumed)": {
 			initialState: Suspended,
-			expectErr:    false,
+			expectErr:    true,
+			expectedErr:  "invalid transition: cannot transition from SUSPENDED to STARTED",
 		},
 		"invalid transition from Terminated": {
 			initialState: Terminated,
@@ -430,10 +433,10 @@ func TestDataFlow_transitionToSuspended(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"invalid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"invalid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    true,
-			expectedErr:  "invalid transition: cannot transition from UNINITIALIZED to SUSPENDED",
+			expectedErr:  "invalid transition: cannot transition from INITIALIZED to SUSPENDED",
 		},
 		"invalid transition from Preparing": {
 			initialState: Preparing,
@@ -479,7 +482,7 @@ func TestDataFlow_transitionToSuspended(t *testing.T) {
 			initialStateCount := df.StateCount
 			initialTimestamp := df.StateTimestamp
 
-			err := df.TransitionToSuspended("test-reason")
+			err := df.TransitionToSuspended("test-reason", SuspendedByRemote)
 
 			if tc.expectErr {
 				if err == nil {
@@ -533,10 +536,10 @@ func TestDataFlow_transitionToCompleted(t *testing.T) {
 		expectErr    bool
 		expectedErr  string
 	}{
-		"invalid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"invalid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    true,
-			expectedErr:  "invalid transition: cannot transition from UNINITIALIZED to COMPLETED",
+			expectedErr:  "invalid transition: cannot transition from INITIALIZED to COMPLETED",
 		},
 		"invalid transition from Preparing": {
 			initialState: Preparing,
@@ -635,8 +638,8 @@ func TestDataFlow_transitionToTerminated(t *testing.T) {
 		initialState DataFlowState
 		expectErr    bool
 	}{
-		"valid transition from Uninitialized": {
-			initialState: Uninitialized,
+		"valid transition from Initialized": {
+			initialState: Initialized,
 			expectErr:    false,
 		},
 		"valid transition from Preparing": {
@@ -655,9 +658,9 @@ func TestDataFlow_transitionToTerminated(t *testing.T) {
 			initialState: Started,
 			expectErr:    false,
 		},
-		"valid transition from Completed": {
+		"invalid transition from Completed (final)": {
 			initialState: Completed,
-			expectErr:    false,
+			expectErr:    true,
 		},
 		"valid transition from Suspended": {
 			initialState: Suspended,
@@ -726,7 +729,7 @@ func TestDataFlow_transitionToTerminated(t *testing.T) {
 // Test to ensure timestamps are properly set and state counts increment correctly
 func TestDataFlow_TransitionsTimestampAndCounter(t *testing.T) {
 	df := &DataFlow{
-		State:      Uninitialized,
+		State:      Initialized,
 		StateCount: 0,
 	}
 
@@ -766,7 +769,7 @@ func TestDataFlow_TransitionsTimestampAndCounter(t *testing.T) {
 // Test case with zero initial timestamp
 func TestDataFlow_TransitionFromZeroTimestamp(t *testing.T) {
 	df := &DataFlow{
-		State:          Uninitialized,
+		State:          Initialized,
 		StateCount:     0,
 		StateTimestamp: 0,
 	}
@@ -785,4 +788,30 @@ func TestDataFlow_TransitionFromZeroTimestamp(t *testing.T) {
 	if df.StateCount != 1 {
 		t.Errorf("expected state count 1, got %d", df.StateCount)
 	}
+}
+
+func TestDataFlow_SuspendAndResume(t *testing.T) {
+	df := &DataFlow{ID: "flow", State: Started}
+
+	err := df.TransitionToSuspended("maintenance", SuspendedByNone)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Equal(t, Started, df.State)
+
+	assert.NoError(t, df.TransitionToSuspended("maintenance", SuspendedByLocal))
+	assert.Equal(t, Suspended, df.State)
+	assert.Equal(t, SuspendedByLocal, df.SuspendedBy)
+	assert.Equal(t, "maintenance", df.ErrorDetail)
+
+	// only the suspending party may resume
+	err = df.TransitionToResumed(SuspendedByRemote)
+	assert.ErrorIs(t, err, ErrInvalidTransition)
+	assert.Equal(t, Suspended, df.State)
+
+	assert.NoError(t, df.TransitionToResumed(SuspendedByLocal))
+	assert.Equal(t, Started, df.State)
+	assert.Equal(t, SuspendedByNone, df.SuspendedBy)
+	assert.Empty(t, df.ErrorDetail)
+
+	// resuming a flow that is not suspended fails
+	assert.ErrorIs(t, df.TransitionToResumed(SuspendedByLocal), ErrInvalidTransition)
 }

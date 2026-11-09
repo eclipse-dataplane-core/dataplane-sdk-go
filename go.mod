@@ -3,7 +3,7 @@ module github.com/eclipse-dataplane-core/dataplane-sdk-go
 go 1.24.1
 
 require (
-	github.com/go-chi/chi/v5 v5.5.1-0.20261018135022-9f8adb1aabaa
+	github.com/docker/go-connections v0.6.0
 	github.com/go-playground/validator/v10 v10.27.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.10.9
@@ -11,6 +11,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.11.6
 	github.com/nats-io/nats.go v1.43.0
 	github.com/nats-io/nkeys v0.4.11
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/stretchr/testify v1.10.0
 	github.com/synadia-io/callout.go v0.2.1
 	github.com/testcontainers/testcontainers-go v0.39.0
@@ -29,7 +30,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.3.3+incompatible // indirect
-	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

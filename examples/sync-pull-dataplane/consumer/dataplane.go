@@ -39,7 +39,7 @@ const (
 // This data plane implements non-finite data transfers. Multiple requests may be issued to the provider data plane over a
 // period of time. For example, the dataset could be access to an API.
 type ConsumerDataPlane struct {
-	api             *dsdk.DataPlaneApi
+	sdk             *dsdk.DataPlaneSDK
 	signalingServer *http.Server
 	dataServer      *http.Server
 	tokenStore      *common.Store[tokenEntry]
@@ -57,12 +57,12 @@ func NewDataPlane() (*ConsumerDataPlane, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataplane.api = dsdk.NewDataPlaneApi(sdk)
+	dataplane.sdk = sdk
 	return dataplane, nil
 }
 
 func (d *ConsumerDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ConsumerSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
 	// Start signaling server
 	go func() {
 		log.Printf("[Consumer Data Plane] Signaling server listening on port %d\n", common.ConsumerSignalingPort)
@@ -92,20 +92,23 @@ func (d *ConsumerDataPlane) Shutdown(ctx context.Context) {
 func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	log.Printf("[Consumer Data Plane] Prepared transfer for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Prepared}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared}, nil
 }
 
 func (d *ConsumerDataPlane) startProcessor(_ context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	log.Printf("[Consumer Data Plane] Transfer access token available for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	endpoint := options.DataAddress.Properties[dsdk.EndpointKey].(string)
-	token := options.DataAddress.Properties["token"].(string)
+	endpoint := options.DataAddress.Endpoint
+	token, found := options.DataAddress.Property("token")
+	if !found {
+		return nil, errors.New("token not found in endpoint properties")
+	}
 	d.tokenStore.Create(flow.DatasetID, tokenEntry{datasetID: flow.DatasetID, token: token, endpoint: endpoint})
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
 }
 
 func (d *ConsumerDataPlane) getEndpointToken(w http.ResponseWriter, r *http.Request) {

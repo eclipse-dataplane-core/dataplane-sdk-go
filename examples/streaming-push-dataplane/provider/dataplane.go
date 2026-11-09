@@ -25,7 +25,7 @@ import (
 )
 
 type ProviderDataPlane struct {
-	api              *dsdk.DataPlaneApi
+	sdk              *dsdk.DataPlaneSDK
 	signalingServer  *http.Server
 	dataServer       *http.Server
 	publisherService *EventPublisherService
@@ -45,12 +45,12 @@ func NewDataPlane(publisherService *EventPublisherService) (*ProviderDataPlane, 
 	if err != nil {
 		return nil, err
 	}
-	dataplane.api = dsdk.NewDataPlaneApi(sdk)
+	dataplane.sdk = sdk
 	return dataplane, nil
 }
 
 func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ProviderSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
 	// Start signaling server
 	go func() {
 		log.Printf("[Provider Data Plane] Signaling server listening on port %d\n", common.ProviderSignalingPort)
@@ -72,16 +72,16 @@ func (d *ProviderDataPlane) Shutdown(ctx context.Context) {
 func (d *ProviderDataPlane) prepareProcessor(_ context.Context,
 	_ *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	_ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	return nil, errors.New("not supported on provider")
 }
 
 func (d *ProviderDataPlane) startProcessor(ctx context.Context,
 	flow *dsdk.DataFlow,
 	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 
-	endpoint := options.DataAddress.Properties[dsdk.EndpointKey].(string)
+	endpoint := options.DataAddress.Endpoint
 	token, found := parseToken(natsservices.TokenKey, options.DataAddress)
 	if !found {
 		return nil, errors.New("token not found in endpoint properties")
@@ -96,7 +96,7 @@ func (d *ProviderDataPlane) startProcessor(ctx context.Context,
 	d.publisherService.Start(flow.ID, endpoint, channel, token)
 
 	log.Printf("[Provider Data Plane] Started NATS subscriber for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
 }
 
 func (d *ProviderDataPlane) terminateProcessor(_ context.Context, flow *dsdk.DataFlow) error {
@@ -114,14 +114,5 @@ func (d *ProviderDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataF
 }
 
 func parseToken(keyValue string, da *dsdk.DataAddress) (string, bool) {
-	rawProps, ok := da.Properties[dsdk.EndpointProperties].([]any)
-	if !ok {
-		log.Fatal("endpoint properties is not a slice")
-	}
-	for _, item := range rawProps {
-		if item.(map[string]any)["key"] == keyValue {
-			return item.(map[string]any)["value"].(string), true
-		}
-	}
-	return "", false
+	return da.Property(keyValue)
 }

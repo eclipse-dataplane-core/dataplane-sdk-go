@@ -27,15 +27,16 @@ import (
 )
 
 const (
-	contentType     = "Content-Type"
-	jsonContentType = "application/json"
-	endpointUrl     = "http://localhost:%d/datasets"
+	contentType      = "Content-Type"
+	jsonContentType  = "application/json"
+	endpointUrl      = "http://localhost:%d/datasets"
+	httpEndpointType = "https://w3id.org/idsa/v4.1/HTTP"
 )
 
 // ProviderDataPlane is a provider data plane that demonstrates how to use the Data Plane SDK. This implementation supports
 // the transfer of simple JSON datasets over HTTP and Data Plane Signaling start and prepare handling using synchronous responses.
 type ProviderDataPlane struct {
-	api             *dsdk.DataPlaneApi
+	sdk             *dsdk.DataPlaneSDK
 	tokenStore      *common.Store[tokenEntry]
 	signalingServer *http.Server
 	dataServer      *http.Server
@@ -58,13 +59,13 @@ func NewDataPlane() (*ProviderDataPlane, error) {
 		return nil, err
 	}
 
-	providerDataPlane.api = dsdk.NewDataPlaneApi(sdk)
+	providerDataPlane.sdk = sdk
 
 	return providerDataPlane, nil
 }
 
 func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.api, common.ProviderSignalingPort)
+	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
 	d.dataServer = common.NewDataServer(common.ProviderDataPort, "/datasets/", d.transferDataset)
 
 	// Start signaling server
@@ -98,11 +99,11 @@ func (d *ProviderDataPlane) Shutdown(ctx context.Context) {
 	log.Println("Provider data plane shutdown")
 }
 
-func (d *ProviderDataPlane) prepareProcessor(ctx context.Context, flow *dsdk.DataFlow, sdk *dsdk.DataPlaneSDK, options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+func (d *ProviderDataPlane) prepareProcessor(ctx context.Context, flow *dsdk.DataFlow, sdk *dsdk.DataPlaneSDK, options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	return nil, errors.New("not supported on provider")
 }
 
-func (d *ProviderDataPlane) startProcessor(ctx context.Context, flow *dsdk.DataFlow, sdk *dsdk.DataPlaneSDK, options *dsdk.ProcessorOptions) (*dsdk.DataFlowResponseMessage, error) {
+func (d *ProviderDataPlane) startProcessor(ctx context.Context, flow *dsdk.DataFlow, sdk *dsdk.DataPlaneSDK, options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 	token := uuid.NewString()
 
 	if options.Duplicate {
@@ -119,8 +120,9 @@ func (d *ProviderDataPlane) startProcessor(ctx context.Context, flow *dsdk.DataF
 	d.tokenStore.Create(flow.DatasetID, tokenEntry) // token is pinned to the flow ID which is the transfer process id on the control plane
 
 	da, err := dsdk.NewDataAddressBuilder().
+		EndpointType(httpEndpointType).
+		Endpoint(fmt.Sprintf(endpointUrl, common.ProviderDataPort)).
 		Property("token", token).
-		Property("endpoint", fmt.Sprintf(endpointUrl, common.ProviderDataPort)).
 		Build()
 	if err != nil {
 		// remove up token on error
@@ -129,7 +131,7 @@ func (d *ProviderDataPlane) startProcessor(ctx context.Context, flow *dsdk.DataF
 	}
 
 	log.Printf("[Provider Data Plane] Started transfer for %s and returning access token\n", flow.CounterPartyID)
-	return &dsdk.DataFlowResponseMessage{State: dsdk.Started, DataAddress: da}, nil
+	return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: da}, nil
 }
 
 func (d *ProviderDataPlane) suspendProcessor(ctx context.Context, flow *dsdk.DataFlow) error {

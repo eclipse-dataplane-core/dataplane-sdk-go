@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/natsservices"
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming"
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/streaming-pull-dataplane/launcher"
 )
@@ -8,5 +9,5 @@ import (
 func main() {
 	launcher.LaunchServices()
 
-	streaming.TerminateScenario()
+	streaming.TerminateScenario(natsservices.PullProfile)
 }

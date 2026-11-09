@@ -3,117 +3,209 @@ package dsdk
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
+	"strings"
 	"time"
 )
 
-type FlowType string
-
 const (
-	Pull               FlowType = "pull"
-	Push               FlowType = "push"
-	TypeKey                     = "@type"
-	DataAddressType             = "DataAddress"
-	EndpointKey                 = "endpoint"
-	EndpointType                = "endpointType"
-	EndpointProperties          = "endpointProperties"
+	dataAddressType      = "DataAddress"
+	endpointPropertyType = "EndpointProperty"
+	typeKey              = "@type"
 )
 
+// DataAddress conveys information to access a wire protocol endpoint, serialized as defined by the Dataspace Protocol.
 type DataAddress struct {
-	Properties map[string]any `json:"properties"`
+	EndpointType       string             `json:"endpointType" validate:"required"`
+	Endpoint           string             `json:"endpoint,omitempty"`
+	EndpointProperties []EndpointProperty `json:"endpointProperties,omitempty" validate:"omitempty,min=1,dive"`
+}
+
+// EndpointProperty is a name/value pair of a DataAddress.
+type EndpointProperty struct {
+	Name  string `json:"name" validate:"required"`
+	Value string `json:"value"`
+}
+
+// Property returns the value of the endpoint property with the given name.
+func (d *DataAddress) Property(name string) (string, bool) {
+	if d == nil {
+		return "", false
+	}
+	for _, p := range d.EndpointProperties {
+		if p.Name == name {
+			return p.Value, true
+		}
+	}
+	return "", false
+}
+
+// Copy returns a deep copy of the data address, or nil if d is nil.
+func (d *DataAddress) Copy() *DataAddress {
+	if d == nil {
+		return nil
+	}
+	c := *d
+	if d.EndpointProperties != nil {
+		c.EndpointProperties = append([]EndpointProperty(nil), d.EndpointProperties...)
+	}
+	return &c
+}
+
+type dataAddressJSON struct {
+	Type               string                 `json:"@type"`
+	EndpointType       string                 `json:"endpointType"`
+	Endpoint           string                 `json:"endpoint,omitempty"`
+	EndpointProperties []endpointPropertyJSON `json:"endpointProperties,omitempty"`
+}
+
+type endpointPropertyJSON struct {
+	Type  string `json:"@type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// MarshalJSON adds the JSON-LD @type values required by the DSP DataAddress schema.
+func (d DataAddress) MarshalJSON() ([]byte, error) {
+	out := dataAddressJSON{
+		Type:         dataAddressType,
+		EndpointType: d.EndpointType,
+		Endpoint:     d.Endpoint,
+	}
+	for _, p := range d.EndpointProperties {
+		out.EndpointProperties = append(out.EndpointProperties, endpointPropertyJSON{Type: endpointPropertyType, Name: p.Name, Value: p.Value})
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON accepts a DSP DataAddress; the @type values are optional on input.
+func (d *DataAddress) UnmarshalJSON(data []byte) error {
+	var in dataAddressJSON
+	if err := json.Unmarshal(data, &in); err != nil {
+		return err
+	}
+	if in.Type != "" && in.Type != dataAddressType {
+		return fmt.Errorf("invalid DataAddress %s: %q", typeKey, in.Type)
+	}
+	*d = DataAddress{EndpointType: in.EndpointType, Endpoint: in.Endpoint}
+	for _, p := range in.EndpointProperties {
+		if p.Type != "" && p.Type != endpointPropertyType {
+			return fmt.Errorf("invalid EndpointProperty %s: %q", typeKey, p.Type)
+		}
+		d.EndpointProperties = append(d.EndpointProperties, EndpointProperty{Name: p.Name, Value: p.Value})
+	}
+	return nil
+}
+
+// DataAddressBuilder builds a DataAddress.
+type DataAddressBuilder struct {
+	address DataAddress
 }
 
 func NewDataAddressBuilder() *DataAddressBuilder {
-	return &DataAddressBuilder{
-		properties: make(map[string]any),
-	}
+	return &DataAddressBuilder{}
 }
 
-type DataAddressBuilder struct {
-	properties map[string]any
-}
-
-func (b *DataAddressBuilder) Property(key string, value any) *DataAddressBuilder {
-	b.properties[key] = value
+func (b *DataAddressBuilder) EndpointType(endpointType string) *DataAddressBuilder {
+	b.address.EndpointType = endpointType
 	return b
 }
 
-func (b *DataAddressBuilder) EndpointProperty(key string, typeVal string, value any) *DataAddressBuilder {
-	endpointProps := b.properties[EndpointProperties]
-	if endpointProps == nil {
-		endpointProps = make([]any, 0)
-		b.properties[EndpointProperties] = endpointProps
-	}
-	if endpoints, ok := endpointProps.([]any); ok {
-		props := map[string]any{
-			"key":   key,
-			"type":  typeVal,
-			"value": value,
-		}
-		endpoints = append(endpoints, props)
-		b.properties[EndpointProperties] = endpoints
-	} else {
-		panic("endpoint properties is not an array")
-	}
+func (b *DataAddressBuilder) Endpoint(endpoint string) *DataAddressBuilder {
+	b.address.Endpoint = endpoint
 	return b
 }
 
-func (b *DataAddressBuilder) Properties(props map[string]any) *DataAddressBuilder {
-	for k, v := range props {
-		b.properties[k] = v
-	}
+// Property adds an endpoint property.
+func (b *DataAddressBuilder) Property(name string, value string) *DataAddressBuilder {
+	b.address.EndpointProperties = append(b.address.EndpointProperties, EndpointProperty{Name: name, Value: value})
 	return b
 }
 
 func (b *DataAddressBuilder) Build() (*DataAddress, error) {
-	if b.properties[TypeKey] == nil {
-		b.properties[TypeKey] = DataAddressType
+	if b.address.EndpointType == "" {
+		return nil, NewValidationError("endpointType is required")
 	}
-
-	return &DataAddress{
-		Properties: b.properties,
-	}, nil
+	for _, p := range b.address.EndpointProperties {
+		if p.Name == "" {
+			return nil, NewValidationError("endpoint property name is required")
+		}
+	}
+	return b.address.Copy(), nil
 }
 
-type TransferType struct {
-	DestinationType string   `json:"destinationType" validate:"required"`
-	FlowType        FlowType `json:"flowType" validate:"required"`
-}
-
+// DataFlowState is the state of a data flow. It is stored as an int and serialized as the specification's string enum.
 type DataFlowState int
 
-func (s DataFlowState) String() string {
-	switch s {
-	case Uninitialized:
-		return "UNINITIALIZED"
-	case Preparing:
-		return "PREPARING"
-	case Prepared:
-		return "PREPARED"
-	case Starting:
-		return "STARTING"
-	case Started:
-		return "STARTED"
-	case Completed:
-		return "COMPLETED"
-	case Suspended:
-		return "SUSPENDED"
-	case Terminated:
-		return "TERMINATED"
-	default:
-		return fmt.Sprintf("UNKNOWN(%d)", int(s))
-	}
+const (
+	Initialized DataFlowState = 0
+	Preparing   DataFlowState = 50
+	Prepared    DataFlowState = 100
+	Starting    DataFlowState = 150
+	Started     DataFlowState = 200
+	Completed   DataFlowState = 250
+	Suspended   DataFlowState = 300
+	Terminated  DataFlowState = 350
+)
+
+var stateNames = map[DataFlowState]string{
+	Initialized: "INITIALIZED",
+	Preparing:   "PREPARING",
+	Prepared:    "PREPARED",
+	Starting:    "STARTING",
+	Started:     "STARTED",
+	Completed:   "COMPLETED",
+	Suspended:   "SUSPENDED",
+	Terminated:  "TERMINATED",
 }
 
+func (s DataFlowState) String() string {
+	if name, ok := stateNames[s]; ok {
+		return name
+	}
+	return fmt.Sprintf("UNKNOWN(%d)", int(s))
+}
+
+// ParseDataFlowState returns the state for the given specification name.
+func ParseDataFlowState(name string) (DataFlowState, error) {
+	for state, n := range stateNames {
+		if n == name {
+			return state, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: unknown data flow state %q", ErrInvalidInput, name)
+}
+
+func (s DataFlowState) MarshalJSON() ([]byte, error) {
+	name, ok := stateNames[s]
+	if !ok {
+		return nil, fmt.Errorf("unknown data flow state %d", int(s))
+	}
+	return json.Marshal(name)
+}
+
+func (s *DataFlowState) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
+		return err
+	}
+	state, err := ParseDataFlowState(name)
+	if err != nil {
+		return err
+	}
+	*s = state
+	return nil
+}
+
+// SuspendedBy records which party suspended a data flow. Only that party may resume it.
+type SuspendedBy string
+
 const (
-	Uninitialized DataFlowState = 0
-	Preparing     DataFlowState = 50
-	Prepared      DataFlowState = 100
-	Starting      DataFlowState = 150
-	Started       DataFlowState = 200
-	Completed     DataFlowState = 250
-	Suspended     DataFlowState = 300
-	Terminated    DataFlowState = 350
+	// SuspendedByNone is set when the flow is not suspended.
+	SuspendedByNone SuspendedBy = ""
+	// SuspendedByLocal is set when the data plane suspended the flow itself.
+	SuspendedByLocal SuspendedBy = "local"
+	// SuspendedByRemote is set when the control plane suspended the flow via the signaling API.
+	SuspendedByRemote SuspendedBy = "remote"
 )
 
 type DataFlow struct {
@@ -128,26 +220,80 @@ type DataFlow struct {
 	ParticipantID          string
 	DataspaceContext       string
 	CounterPartyID         string
-	CallbackAddress        CallbackURL
-	TransferType           TransferType
+	Profile                string
+	Claims                 map[string]any
+	Labels                 []string
+	Metadata               map[string]any
+	ControlPlaneID         string
+	SuspendedBy            SuspendedBy
 	State                  DataFlowState
 	StateCount             uint
 	StateTimestamp         int64
-	SourceDataAddress      DataAddress
-	DestinationDataAddress DataAddress
+	SourceDataAddress      *DataAddress
+	DestinationDataAddress *DataAddress
 	ErrorDetail            string
+}
+
+func (df *DataFlow) profileSuffix() string {
+	return df.Profile[strings.LastIndex(df.Profile, "-")+1:]
+}
+
+// IsPush returns true if the profile denotes a push transfer, i.e. its last '-' token is "push" (case-insensitive).
+func (df *DataFlow) IsPush() bool {
+	return strings.EqualFold(df.profileSuffix(), "push")
+}
+
+// IsPull returns true if the profile denotes a pull transfer, i.e. its last '-' token is "pull" (case-insensitive).
+func (df *DataFlow) IsPull() bool {
+	return strings.EqualFold(df.profileSuffix(), "pull")
+}
+
+// Copy returns a deep copy of the data flow. Claims and metadata values are copied shallowly.
+func (df *DataFlow) Copy() *DataFlow {
+	c := *df
+	c.Claims = copyMap(df.Claims)
+	c.Metadata = copyMap(df.Metadata)
+	if df.Labels != nil {
+		c.Labels = append([]string(nil), df.Labels...)
+	}
+	c.SourceDataAddress = df.SourceDataAddress.Copy()
+	c.DestinationDataAddress = df.DestinationDataAddress.Copy()
+	return &c
+}
+
+func copyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]any, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+func (df *DataFlow) isFinal() bool {
+	return df.State == Completed || df.State == Terminated
+}
+
+func (df *DataFlow) transition(state DataFlowState) {
+	df.State = state
+	df.StateTimestamp = time.Now().UnixMilli()
+	df.StateCount++
+}
+
+func (df *DataFlow) invalidTransition(to DataFlowState) error {
+	return fmt.Errorf("%w: cannot transition from %v to %v", ErrInvalidTransition, df.State, to)
 }
 
 func (df *DataFlow) TransitionToPreparing() error {
 	if df.State == Preparing {
 		return nil
 	}
-	if df.State != Uninitialized {
-		return fmt.Errorf("%w: cannot transition from %v to PREPARING", ErrInvalidTransition, df.State)
+	if df.State != Initialized {
+		return df.invalidTransition(Preparing)
 	}
-	df.State = Preparing
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Preparing)
 	return nil
 }
 
@@ -155,12 +301,10 @@ func (df *DataFlow) TransitionToPrepared() error {
 	if df.State == Prepared {
 		return nil
 	}
-	if df.State != Uninitialized && df.State != Preparing {
-		return fmt.Errorf("%w: cannot transition from %v to PREPARED", ErrInvalidTransition, df.State)
+	if df.State != Initialized && df.State != Preparing {
+		return df.invalidTransition(Prepared)
 	}
-	df.State = Prepared
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Prepared)
 	return nil
 }
 
@@ -168,40 +312,54 @@ func (df *DataFlow) TransitionToStarting() error {
 	if df.State == Starting {
 		return nil
 	}
-	if df.State != Uninitialized && df.State != Prepared {
-		return fmt.Errorf("%w: cannot transition from %v to STARTING", ErrInvalidTransition, df.State)
+	if df.State != Initialized && df.State != Prepared {
+		return df.invalidTransition(Starting)
 	}
-	df.State = Starting
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Starting)
 	return nil
 }
 
+// TransitionToStarted transitions a new, prepared or starting flow to STARTED. Use TransitionToResumed for a
+// suspended flow.
 func (df *DataFlow) TransitionToStarted() error {
 	if df.State == Started {
 		return nil
 	}
-	if df.State != Uninitialized && df.State != Prepared && df.State != Starting && df.State != Suspended {
-		return fmt.Errorf("%w: cannot transition from %v to STARTED", ErrInvalidTransition, df.State)
+	if df.State != Initialized && df.State != Prepared && df.State != Starting {
+		return df.invalidTransition(Started)
 	}
-	df.State = Started
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Started)
 	return nil
 }
 
-func (df *DataFlow) TransitionToSuspended(reason string) error {
+// TransitionToSuspended transitions a STARTED flow to SUSPENDED and records who suspended it.
+func (df *DataFlow) TransitionToSuspended(reason string, by SuspendedBy) error {
 	if df.State == Suspended {
 		return nil
 	}
 	if df.State != Started {
-		return fmt.Errorf("%w: cannot transition from %v to SUSPENDED", ErrInvalidTransition, df.State)
+		return df.invalidTransition(Suspended)
 	}
-	df.State = Suspended
-	//todo: what to do with the reason string?
+	if by != SuspendedByLocal && by != SuspendedByRemote {
+		return fmt.Errorf("%w: invalid suspending party %q", ErrInvalidInput, by)
+	}
+	df.SuspendedBy = by
 	df.ErrorDetail = reason
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Suspended)
+	return nil
+}
+
+// TransitionToResumed transitions a SUSPENDED flow back to STARTED. Only the party that suspended the flow may resume it.
+func (df *DataFlow) TransitionToResumed(by SuspendedBy) error {
+	if df.State != Suspended {
+		return df.invalidTransition(Started)
+	}
+	if df.SuspendedBy != by {
+		return fmt.Errorf("%w: data flow %s was suspended by the %s party and can only be resumed by it", ErrInvalidTransition, df.ID, df.SuspendedBy)
+	}
+	df.SuspendedBy = SuspendedByNone
+	df.ErrorDetail = ""
+	df.transition(Started)
 	return nil
 }
 
@@ -210,23 +368,22 @@ func (df *DataFlow) TransitionToCompleted() error {
 		return nil
 	}
 	if df.State != Started {
-		return fmt.Errorf("%w: cannot transition from %v to COMPLETED", ErrInvalidTransition, df.State)
+		return df.invalidTransition(Completed)
 	}
-	df.State = Completed
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Completed)
 	return nil
 }
 
+// TransitionToTerminated transitions any non-final flow to TERMINATED. COMPLETED is final and cannot be terminated.
 func (df *DataFlow) TransitionToTerminated(reason string) error {
 	if df.State == Terminated {
-		return nil // todo: does returning an error make sense here?
+		return nil
 	}
-	// Any state can transition to terminated
-	df.State = Terminated
+	if df.State == Completed {
+		return df.invalidTransition(Terminated)
+	}
 	df.ErrorDetail = reason
-	df.StateTimestamp = time.Now().UnixMilli()
-	df.StateCount++
+	df.transition(Terminated)
 	return nil
 }
 
@@ -273,6 +430,36 @@ func (b *DataFlowBuilder) CounterpartyID(id string) *DataFlowBuilder {
 	return b
 }
 
+func (b *DataFlowBuilder) Profile(profile string) *DataFlowBuilder {
+	b.dataFlow.Profile = profile
+	return b
+}
+
+func (b *DataFlowBuilder) Claims(claims map[string]any) *DataFlowBuilder {
+	b.dataFlow.Claims = claims
+	return b
+}
+
+func (b *DataFlowBuilder) Labels(labels []string) *DataFlowBuilder {
+	b.dataFlow.Labels = labels
+	return b
+}
+
+func (b *DataFlowBuilder) Metadata(metadata map[string]any) *DataFlowBuilder {
+	b.dataFlow.Metadata = metadata
+	return b
+}
+
+func (b *DataFlowBuilder) ControlPlaneID(id string) *DataFlowBuilder {
+	b.dataFlow.ControlPlaneID = id
+	return b
+}
+
+func (b *DataFlowBuilder) SuspendedBy(by SuspendedBy) *DataFlowBuilder {
+	b.dataFlow.SuspendedBy = by
+	return b
+}
+
 func (b *DataFlowBuilder) State(state DataFlowState) *DataFlowBuilder {
 	b.dataFlow.State = state
 	return b
@@ -288,23 +475,13 @@ func (b *DataFlowBuilder) StateTimestamp(timestamp int64) *DataFlowBuilder {
 	return b
 }
 
-func (b *DataFlowBuilder) SourceDataAddress(address DataAddress) *DataFlowBuilder {
+func (b *DataFlowBuilder) SourceDataAddress(address *DataAddress) *DataFlowBuilder {
 	b.dataFlow.SourceDataAddress = address
 	return b
 }
 
-func (b *DataFlowBuilder) DestinationDataAddress(address DataAddress) *DataFlowBuilder {
+func (b *DataFlowBuilder) DestinationDataAddress(address *DataAddress) *DataFlowBuilder {
 	b.dataFlow.DestinationDataAddress = address
-	return b
-}
-
-func (b *DataFlowBuilder) CallbackAddress(callback CallbackURL) *DataFlowBuilder {
-	b.dataFlow.CallbackAddress = callback
-	return b
-}
-
-func (b *DataFlowBuilder) TransferType(transferType TransferType) *DataFlowBuilder {
-	b.dataFlow.TransferType = transferType
 	return b
 }
 
@@ -359,16 +536,8 @@ func (b *DataFlowBuilder) Build() (*DataFlow, error) {
 		validationErrs = append(validationErrs, "CounterPartyID is required")
 	}
 
-	if b.dataFlow.CallbackAddress.URL().String() == "" {
-		validationErrs = append(validationErrs, "CallbackAddress is required")
-	}
-
-	if b.dataFlow.TransferType.DestinationType == "" {
-		validationErrs = append(validationErrs, "TransferType destination type is required")
-	}
-
-	if b.dataFlow.TransferType.FlowType == "" {
-		validationErrs = append(validationErrs, "TransferType flow type is required")
+	if b.dataFlow.Profile == "" {
+		validationErrs = append(validationErrs, "Profile is required")
 	}
 
 	if len(validationErrs) > 0 {
@@ -376,40 +545,4 @@ func (b *DataFlowBuilder) Build() (*DataFlow, error) {
 	}
 
 	return &b.dataFlow, nil
-}
-
-type CallbackURL url.URL
-
-func (u CallbackURL) MarshalJSON() ([]byte, error) {
-	//	Convert to standard url.URL and get the string representation
-	stdURL := url.URL(u)
-	return json.Marshal(stdURL.String())
-}
-
-func (u *CallbackURL) UnmarshalJSON(data []byte) error {
-	var urlStr string
-	if err := json.Unmarshal(data, &urlStr); err != nil {
-		return err
-	}
-
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return err
-	}
-
-	*u = CallbackURL(*parsedURL)
-	return nil
-}
-
-func (u *CallbackURL) URL() *url.URL {
-	if u == nil {
-		return nil
-	}
-
-	urlCopy := url.URL(*u)
-	return &urlCopy
-}
-
-func (u CallbackURL) IsEmpty() bool {
-	return u.Scheme == "" && u.Host == ""
 }

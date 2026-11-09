@@ -171,10 +171,10 @@ func Test_FindById_WithDataAddress(t *testing.T) {
 	id := uuid.New().String()
 	err := store.Save(ctx, &dsdk.DataFlow{
 		ID: id,
-		SourceDataAddress: dsdk.DataAddress{
-			Properties: map[string]any{
-				"foo": "bar",
-			},
+		SourceDataAddress: &dsdk.DataAddress{
+			EndpointType:       "https://w3id.org/idsa/v4.1/HTTP",
+			Endpoint:           "https://example.com",
+			EndpointProperties: []dsdk.EndpointProperty{{Name: "foo", Value: "bar"}},
 		},
 	})
 	assert.NoError(t, err)
@@ -182,7 +182,63 @@ func Test_FindById_WithDataAddress(t *testing.T) {
 	found, err := store.FindById(ctx, id)
 	assert.NoError(t, err)
 	assert.Equal(t, id, found.ID)
-	assert.Equal(t, "bar", found.SourceDataAddress.Properties["foo"])
+	value, ok := found.SourceDataAddress.Property("foo")
+	assert.True(t, ok)
+	assert.Equal(t, "bar", value)
+	assert.Nil(t, found.DestinationDataAddress)
+}
+
+func Test_FindById_RoundTripsAllFields(t *testing.T) {
+	id := uuid.New().String()
+	flow := &dsdk.DataFlow{
+		ID:               id,
+		Consumer:         true,
+		AgreementID:      "agreement-id",
+		DatasetID:        "dataset-id",
+		RuntimeID:        "runtime-id",
+		ParticipantID:    "participant-id",
+		DataspaceContext: "dataspace-context",
+		CounterPartyID:   "counterparty-id",
+		Profile:          "https://w3id.org/dspace-sig/profile/http-pull",
+		Claims:           map[string]any{"membership": "active"},
+		Labels:           []string{"gold", "blue"},
+		Metadata:         map[string]any{"region": "westeurope"},
+		ControlPlaneID:   "control-plane-id",
+		SuspendedBy:      dsdk.SuspendedByRemote,
+		State:            dsdk.Suspended,
+		StateCount:       3,
+		ErrorDetail:      "maintenance",
+		DestinationDataAddress: &dsdk.DataAddress{
+			EndpointType: "https://w3id.org/idsa/v4.1/HTTP",
+			Endpoint:     "https://example.com",
+		},
+	}
+	assert.NoError(t, store.Create(ctx, flow))
+
+	found, err := store.FindById(ctx, id)
+	assert.NoError(t, err)
+	assert.Equal(t, flow.Profile, found.Profile)
+	assert.Equal(t, flow.Claims, found.Claims)
+	assert.Equal(t, flow.Labels, found.Labels)
+	assert.Equal(t, flow.Metadata, found.Metadata)
+	assert.Equal(t, flow.ControlPlaneID, found.ControlPlaneID)
+	assert.Equal(t, dsdk.SuspendedByRemote, found.SuspendedBy)
+	assert.Equal(t, dsdk.Suspended, found.State)
+	assert.Equal(t, uint(3), found.StateCount)
+	assert.Equal(t, "maintenance", found.ErrorDetail)
+	assert.Equal(t, flow.DestinationDataAddress, found.DestinationDataAddress)
+	assert.Nil(t, found.SourceDataAddress)
+
+	found.SuspendedBy = dsdk.SuspendedByNone
+	found.State = dsdk.Started
+	found.Labels = nil
+	assert.NoError(t, store.Save(ctx, found))
+
+	updated, err := store.FindById(ctx, id)
+	assert.NoError(t, err)
+	assert.Equal(t, dsdk.SuspendedByNone, updated.SuspendedBy)
+	assert.Equal(t, dsdk.Started, updated.State)
+	assert.Nil(t, updated.Labels)
 }
 
 func Test_FindById_NotExists(t *testing.T) {

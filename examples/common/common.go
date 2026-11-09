@@ -19,7 +19,6 @@ import (
 	"strings"
 
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
-	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -36,29 +35,9 @@ type TokenResponse struct {
 	Endpoint string `json:"url"`
 }
 
-// NewSignalingServer creates and returns a new HTTP server configured with dataplane signaling endpoints.
-func NewSignalingServer(sdkApi *dsdk.DataPlaneApi, port int) *http.Server {
-	r := chi.NewRouter()
-	r.Post("/dataflows/start", sdkApi.Start)
-	r.Post("/dataflows/{id}/started", func(writer http.ResponseWriter, request *http.Request) {
-		id := chi.URLParam(request, "id")
-		sdkApi.StartById(writer, request, id)
-	})
-	r.Post("/dataflows/prepare", sdkApi.Prepare)
-	r.Post("/dataflows/{id}/terminate", func(writer http.ResponseWriter, request *http.Request) {
-		id := chi.URLParam(request, "id")
-		sdkApi.Terminate(id, writer, request)
-	})
-	r.Post("/dataflows/{id}/suspend", func(writer http.ResponseWriter, request *http.Request) {
-		id := chi.URLParam(request, "id")
-		sdkApi.Suspend(id, writer, request)
-	})
-	r.Get("/dataflows/{id}/status", func(writer http.ResponseWriter, request *http.Request) {
-		id := chi.URLParam(request, "id")
-		sdkApi.Status(id, writer, request)
-	})
-
-	return &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: r}
+// NewSignalingServer creates and returns a new HTTP server serving the data plane signaling endpoints under /v1.
+func NewSignalingServer(sdk *dsdk.DataPlaneSDK, port int) *http.Server {
+	return &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: dsdk.NewHandler(sdk)}
 }
 
 // NewDataServer creates and initializes a new HTTP server with a specified port and request handler.

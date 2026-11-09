@@ -21,8 +21,8 @@ const (
 	pushProfile         = "https://w3id.org/dspace-sig/profile/s3-push"
 )
 
-// dataFlowSchemas are the schemas of the data plane endpoints. The registration and agreement schemas in testdata
-// reference further DSP schemas and are not compiled until the SDK implements those endpoints.
+// dataFlowSchemas are the compiled schemas: the data flow and registration messages. AgreementResponse references
+// further DSP schemas (contract and context) and is not compiled; see ControlPlaneClient.GetAgreement.
 var dataFlowSchemas = []string{
 	"DataFlowBaseMessage",
 	"DataFlowPrepareMessage",
@@ -33,6 +33,9 @@ var dataFlowSchemas = []string{
 	"DataFlowTerminateMessage",
 	"DataFlowStatusMessage",
 	"DataFlowStatusResponseMessage",
+	"AuthorizationEntry",
+	"ControlPlaneRegistrationMessage",
+	"DataPlaneRegistrationMessage",
 }
 
 // loadSchemas compiles the published Data Plane Signaling data flow schemas (copied from eclipse-dataplane-signaling

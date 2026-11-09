@@ -10,9 +10,11 @@
 //       Metaform Systems, Inc. - initial API and implementation
 //
 
-// Demonstrates an asynchronous start on a provider data plane: the start processor answers STARTING (HTTP 202), and
-// once the transfer is ready the data plane calls NotifyStarted, which sends the started callback with the pull
-// DataAddress to the control plane.
+// Demonstrates registration and an asynchronous start on a provider data plane. The data plane registers itself with
+// the control plane (PUT /dataplanes) and the control plane registers itself with the data plane
+// (PUT /v1/controlplanes). The start processor then answers STARTING (HTTP 202), and once the transfer is ready the
+// data plane calls NotifyStarted, which sends the started callback with the pull DataAddress to the registered
+// control plane.
 package main
 
 import (
@@ -30,12 +32,28 @@ import (
 	"github.com/google/uuid"
 )
 
-const pullProfile = "https://w3id.org/dspace-sig/profile/http-pull"
+const (
+	pullProfile    = "https://w3id.org/dspace-sig/profile/http-pull"
+	dataPlaneID    = "async-start-dataplane"
+	controlPlaneID = "sample-control-plane"
+)
 
 func main() {
-	// A minimal control plane that receives the data plane's callbacks.
+	// A minimal control plane that accepts data plane registrations and receives the data plane's callbacks.
 	callbacks := make(chan dsdk.DataFlowStatusMessage, 1)
 	controlPlaneMux := http.NewServeMux()
+	controlPlaneMux.HandleFunc("PUT /dataplanes", func(w http.ResponseWriter, r *http.Request) {
+		var registration dsdk.DataPlaneRegistrationMessage
+		if err := json.NewDecoder(r.Body).Decode(&registration); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("[Control Plane] Registered data plane %s at %s for %v", registration.DataPlaneID, registration.Endpoint, registration.Profiles)
+	})
+	controlPlaneMux.HandleFunc("DELETE /dataplanes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[Control Plane] Deregistered data plane %s", r.PathValue("id"))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	controlPlaneMux.HandleFunc("POST /transfers/{id}/dataflow/started", func(w http.ResponseWriter, r *http.Request) {
 		var message dsdk.DataFlowStatusMessage
 		if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
@@ -50,7 +68,7 @@ func main() {
 	sdk, err := dsdk.NewDataPlaneSDK(
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
-		dsdk.WithControlPlane(controlPlaneURL),
+		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithStartProcessor(func(_ context.Context, flow *dsdk.DataFlow, _ *dsdk.DataPlaneSDK, _ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 			// Provisioning takes a while: answer STARTING now and notify the control plane when done.
 			go func() {
@@ -66,6 +84,32 @@ func main() {
 		log.Fatalf("Unable to create SDK: %v", err)
 	}
 	dataPlaneURL := serve(dsdk.NewHandler(sdk))
+	ctx := context.Background()
+
+	// The data plane registers itself with the control plane.
+	authorization := dsdk.AuthorizationEntry{Type: "none"}
+	err = sdk.RegisterDataPlane(ctx, controlPlaneURL, dsdk.DataPlaneRegistrationMessage{
+		DataPlaneID:   dataPlaneID,
+		Endpoint:      dataPlaneURL + dsdk.DefaultBasePath,
+		Profiles:      []string{pullProfile},
+		Authorization: authorization,
+	})
+	if err != nil {
+		log.Fatalf("Unable to register the data plane: %v", err)
+	}
+	defer func() {
+		if err := sdk.DeregisterDataPlane(ctx, controlPlaneURL, dataPlaneID); err != nil {
+			log.Printf("Unable to deregister the data plane: %v", err)
+		}
+	}()
+
+	// The control plane registers itself with the data plane. As it is the only registered control plane, the data
+	// plane records it on new data flows and sends their callbacks to it.
+	put(dataPlaneURL+dsdk.DefaultBasePath+"/controlplanes", dsdk.ControlPlaneRegistrationMessage{
+		ControlPlaneID: controlPlaneID,
+		Endpoint:       controlPlaneURL,
+		Authorization:  authorization,
+	})
 
 	// The control plane starts the transfer.
 	dataFlowID := uuid.NewString()
@@ -126,6 +170,25 @@ func provideAddress(_ context.Context, flow *dsdk.DataFlow, _ *dsdk.DataPlaneSDK
 		return nil, err
 	}
 	return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: address}, nil
+}
+
+// put sends the message with PUT and fails unless the response is 200.
+func put(url string, message any) {
+	body, _ := json.Marshal(message)
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		log.Fatalf("Unable to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatalf("PUT %s failed: %v", url, err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("PUT %s: expected 200, got %d", url, resp.StatusCode)
+	}
+	log.Printf("[Control Plane] Registered with the data plane at %s", url)
 }
 
 // serve starts an HTTP server on a free local port and returns its base URL.

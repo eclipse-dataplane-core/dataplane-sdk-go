@@ -69,20 +69,10 @@ func (d *ProviderDataPlane) Init() {
 	d.dataServer = common.NewDataServer(common.ProviderDataPort, "/datasets/", d.transferDataset)
 
 	// Start signaling server
-	go func() {
-		log.Printf("[Provider Data Plane] Signaling server listening on port %d\n", common.ProviderSignalingPort)
-		if err := d.signalingServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Provider signaling server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.signalingServer, "[Provider Data Plane] Signaling server")
 
 	// Start data server
-	go func() {
-		log.Printf("[Provider Data Plane] Data server listening on port %d\n", common.ProviderDataPort)
-		if err := d.dataServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Provider data server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.dataServer, "[Provider Data Plane] Data server")
 }
 
 func (d *ProviderDataPlane) Shutdown(ctx context.Context) {

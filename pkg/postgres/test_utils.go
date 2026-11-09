@@ -55,6 +55,14 @@ func setupTestContainer(t *testing.T) (testcontainers.Container, string) {
 //go:embed dataflow_schema.sql
 var schema string
 
+//go:embed control_plane_schema.sql
+var controlPlaneSchema string
+
+// Schemas returns the SQL that creates all tables of the SDK's Postgres stores.
+func Schemas() string {
+	return schema + "\n" + controlPlaneSchema
+}
+
 func SetupDatabase(t *testing.T, ctx context.Context) (*sql.DB, testcontainers.Container) {
 
 	// Start a Postgres testcontainer once for all tests
@@ -64,7 +72,7 @@ func SetupDatabase(t *testing.T, ctx context.Context) (*sql.DB, testcontainers.C
 		t.Fatal(err)
 	}
 	// Apply schema (expects the SQL file to be available in repo)
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if _, err := db.ExecContext(ctx, Schemas()); err != nil {
 		panic(err)
 	}
 	return db, container

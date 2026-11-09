@@ -142,5 +142,5 @@ type InMemoryTrxContext struct {
 }
 
 func (c InMemoryTrxContext) Execute(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(context.TODO())
+	return fn(ctx)
 }

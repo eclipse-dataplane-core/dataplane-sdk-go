@@ -50,12 +50,7 @@ func NewDataPlane(eventSubscriber *natsservices.EventSubscriber) (*ConsumerDataP
 func (d *ConsumerDataPlane) Init() {
 	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
 	// Start signaling server
-	go func() {
-		log.Printf("[Consumer Data Plane] Signaling server listening on port %d\n", common.ConsumerSignalingPort)
-		if err := d.signalingServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Consumer signaling server failed to start: %v", err)
-		}
-	}()
+	common.StartServer(d.signalingServer, "[Consumer Data Plane] Signaling server")
 }
 
 func (d *ConsumerDataPlane) Shutdown(ctx context.Context) {

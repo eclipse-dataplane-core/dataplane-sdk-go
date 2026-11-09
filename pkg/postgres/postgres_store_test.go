@@ -53,7 +53,7 @@ func setupDb(t *testing.T) (testcontainers.Container, context.Context) {
 	}
 	testDB = db
 	// Apply schema (expects the SQL file to be available in repo)
-	if _, err := testDB.ExecContext(ctx, schema); err != nil {
+	if _, err := testDB.ExecContext(ctx, Schemas()); err != nil {
 		panic(err)
 	}
 	return container, ctx

@@ -38,7 +38,18 @@ qualities of service, and error handling.
 - Each call transitions the flow, POSTs a `DataFlowStatusMessage` to
   `{controlPlaneURL}/transfers/{id}/dataflow/{prepared|started|completed|errored}` and persists the flow only when the
   control plane answers 2xx. 5xx responses and network errors are retried (see `RetryPolicy`).
-- Configure the endpoint with `WithControlPlane(url)`; see `examples/async-start-dataplane`.
+- Configure the endpoint with `WithControlPlane(url)`, or register control planes (see below); see
+  `examples/async-start-dataplane`.
+
+### 6. Registration
+
+- Control planes register with the data plane: configure `WithControlPlaneStore(store)` (`memory` and `postgres`
+  implementations are provided, see `control_plane_schema.sql`) and `NewHandler` serves `PUT /v1/controlplanes` and
+  `DELETE /v1/controlplanes/{controlPlaneId}`, or call `RegisterControlPlane` / `DeleteControlPlane` directly.
+- Prepare and start record the calling control plane on the data flow (`WithControlPlaneIdentifier`; by default the
+  only registered control plane), and the `Notify*` callbacks go to its registered endpoint.
+- The data plane registers with a control plane via `RegisterDataPlane(ctx, controlPlaneURL, message)`
+  (`PUT {controlPlaneURL}/dataplanes`) and `DeregisterDataPlane` (`DELETE {controlPlaneURL}/dataplanes/{id}`).
 
 ## Key Features
 

@@ -48,6 +48,7 @@ jobs:
           - sync-pull-dataplane
           - streaming-pull-dataplane
           - streaming-push-dataplane
+          - async-start-dataplane
     steps:
       - name: Checkout
         uses: actions/checkout@v4

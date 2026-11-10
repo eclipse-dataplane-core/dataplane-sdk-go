@@ -30,3 +30,9 @@ mock_*
 
 /.idea
 /coverage.html
+
+# Example binaries built with `go build .` in an example directory
+/examples/sync-pull-dataplane/sync-pull-dataplane
+/examples/streaming-pull-dataplane/streaming-pull-dataplane
+/examples/streaming-push-dataplane/streaming-push-dataplane
+/examples/async-start-dataplane/async-start-dataplane

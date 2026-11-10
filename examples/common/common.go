@@ -13,6 +13,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -24,10 +25,15 @@ import (
 )
 
 const (
+	ControlPlanePort      = 7070
 	ProviderSignalingPort = 8080
 	ProviderDataPort      = 8181
 	ConsumerSignalingPort = 9090
 	ConsumerDataPort      = 9191
+
+	// ProviderDataPlaneID and ConsumerDataPlaneID identify the sample data planes towards the control plane.
+	ProviderDataPlaneID = "provider-dataplane"
+	ConsumerDataPlaneID = "consumer-dataplane"
 
 	bearerPrefix = "Bearer "
 )
@@ -37,9 +43,25 @@ type TokenResponse struct {
 	Endpoint string `json:"url"`
 }
 
-// NewSignalingServer creates and returns a new HTTP server serving the data plane signaling endpoints under /v1.
-func NewSignalingServer(sdk *dsdk.DataPlaneSDK, port int) *http.Server {
-	return &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: dsdk.NewHandler(sdk)}
+// StartSignalingServer starts an HTTP server on the port that serves the data plane signaling endpoints of the SDK
+// (dsdk.NewHandler, under /v1) and returns it for shutdown.
+func StartSignalingServer(sdk *dsdk.DataPlaneSDK, port int, name string) *http.Server {
+	server := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: dsdk.NewHandler(sdk)}
+	StartServer(server, name)
+	return server
+}
+
+// RegisterDataPlane registers the data plane listening on signalingPort with the sample control plane at
+// controlPlaneURL. The data plane authenticates as dataPlaneID and asks the control plane to authenticate as
+// SampleControlPlaneID.
+func RegisterDataPlane(ctx context.Context, sdk *dsdk.DataPlaneSDK, dataPlaneID string, signalingPort int, profiles []string, controlPlaneURL string) error {
+	controlPlane := dsdk.ControlPlane{ID: SampleControlPlaneID, Endpoint: controlPlaneURL, Authorization: DemoEntry(dataPlaneID)}
+	return sdk.RegisterDataPlane(ctx, controlPlane, dsdk.DataPlaneRegistrationMessage{
+		DataPlaneID:   dataPlaneID,
+		Endpoint:      fmt.Sprintf("http://localhost:%d%s", signalingPort, dsdk.DefaultBasePath),
+		Profiles:      profiles,
+		Authorization: DemoEntry(SampleControlPlaneID),
+	})
 }
 
 // StartServer binds the server's address before it returns, so that requests sent right afterwards reach it, and then

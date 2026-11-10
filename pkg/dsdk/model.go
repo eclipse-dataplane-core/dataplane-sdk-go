@@ -101,6 +101,7 @@ type DataAddressBuilder struct {
 	address DataAddress
 }
 
+// NewDataAddressBuilder starts building a DataAddress.
 func NewDataAddressBuilder() *DataAddressBuilder {
 	return &DataAddressBuilder{}
 }
@@ -121,6 +122,7 @@ func (b *DataAddressBuilder) Property(name string, value string) *DataAddressBui
 	return b
 }
 
+// Build returns the DataAddress; the endpoint type and the property names are required.
 func (b *DataAddressBuilder) Build() (*DataAddress, error) {
 	if b.address.EndpointType == "" {
 		return nil, NewValidationError("endpointType is required")

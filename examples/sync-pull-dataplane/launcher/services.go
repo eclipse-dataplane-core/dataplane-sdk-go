@@ -13,29 +13,11 @@
 package launcher
 
 import (
-	"context"
-	"sync"
-	"time"
-
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/consumer"
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/sync-pull-dataplane/provider"
 )
 
-func LaunchServicesAndWait(wg *sync.WaitGroup) {
-	go func() {
-		// Launch services
-		providerDataPlane, consumerDataPlane := LaunchServices()
-
-		wg.Wait()
-
-		// Shutdown services
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		consumerDataPlane.Shutdown(ctx)
-		providerDataPlane.Shutdown(ctx)
-	}()
-}
-
+// LaunchServices starts the provider and consumer data planes. Their servers accept requests when it returns.
 func LaunchServices() (*provider.ProviderDataPlane, *consumer.ConsumerDataPlane) {
 	providerDataPlane, err := provider.NewDataPlane()
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 // implementations must support idempotent behavior.
 type DataFlowProcessor func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error)
 
+// ProcessorOptions are passed to a DataFlowProcessor.
 type ProcessorOptions struct {
 	// Duplicate is true if the flow already reached the requested state and the message is processed again.
 	Duplicate bool
@@ -22,8 +23,11 @@ type ProcessorOptions struct {
 	DataAddress *DataAddress
 }
 
+// DataFlowHandler is an extension point for suspend, terminate and complete. It runs before the transition is
+// persisted; an error aborts the operation and leaves the data flow unchanged.
 type DataFlowHandler func(context.Context, *DataFlow) error
 
+// LogMonitor receives the SDK's log messages. The default writes to the standard logger.
 type LogMonitor interface {
 	Println(v ...any)
 	Printf(format string, v ...any)
@@ -31,6 +35,8 @@ type LogMonitor interface {
 
 var errNilResponse = errors.New("processor returned no response")
 
+// DataPlaneSDK implements the data flow state machine of the Data Plane Signaling protocol. Create it with
+// NewDataPlaneSDK and serve it with NewHandler.
 type DataPlaneSDK struct {
 	Store      DataplaneStore
 	TrxContext TransactionContext
@@ -507,24 +513,29 @@ func (dsdk *DataPlaneSDK) execute(ctx context.Context, callback func(ctx2 contex
 // DataPlaneSDKOption configures a DataPlaneSDK instance
 type DataPlaneSDKOption func(*DataPlaneSDK)
 
+// WithStore sets the data flow store (required).
 func WithStore(store DataplaneStore) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.Store = store
 	}
 }
 
+// WithTransactionContext sets the transaction context every SDK operation runs in (required).
 func WithTransactionContext(trxContext TransactionContext) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.TrxContext = trxContext
 	}
 }
 
+// WithMonitor sets where the SDK logs to.
 func WithMonitor(monitor LogMonitor) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.Monitor = monitor
 	}
 }
 
+// WithPrepareProcessor sets the processor invoked for /prepare on the consumer. It reports PREPARED, or PREPARING to
+// complete asynchronously with NotifyPrepared. The default reports PREPARED.
 func WithPrepareProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onPrepare = processor
@@ -538,30 +549,36 @@ func WithStartProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	}
 }
 
+// WithResumeProcessor sets the processor invoked for /resume; it must report STARTED. The default reports STARTED.
 func WithResumeProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onResume = processor
 	}
 }
 
+// WithTerminateProcessor sets the handler invoked for /terminate.
 func WithTerminateProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onTerminate = handler
 	}
 }
 
+// WithSuspendProcessor sets the handler invoked for /suspend.
 func WithSuspendProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onSuspend = handler
 	}
 }
 
+// WithCompleteProcessor sets the handler invoked for /completed.
 func WithCompleteProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onComplete = handler
 	}
 }
 
+// NewDataPlaneSDK creates an SDK instance. WithStore and WithTransactionContext are required; the processors default
+// to reporting the target state without further action.
 func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 	sdk := &DataPlaneSDK{}
 

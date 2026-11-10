@@ -91,6 +91,7 @@ type HTTPControlPlaneClient struct {
 	authorize AuthorizationHeaderFunc
 }
 
+// HTTPControlPlaneClientOption configures an HTTPControlPlaneClient.
 type HTTPControlPlaneClientOption func(*HTTPControlPlaneClient)
 
 // WithHTTPClient sets the http.Client used for requests, e.g. one whose transport adds an Authorization header.
@@ -108,12 +109,14 @@ func WithAuthorizationHeader(authorize AuthorizationHeaderFunc) HTTPControlPlane
 	}
 }
 
+// WithRetryPolicy sets the retry policy (default DefaultRetryPolicy).
 func WithRetryPolicy(policy RetryPolicy) HTTPControlPlaneClientOption {
 	return func(c *HTTPControlPlaneClient) {
 		c.retry = policy
 	}
 }
 
+// NewHTTPControlPlaneClient creates the default ControlPlaneClient with a 30s timeout and DefaultRetryPolicy.
 func NewHTTPControlPlaneClient(options ...HTTPControlPlaneClientOption) *HTTPControlPlaneClient {
 	c := &HTTPControlPlaneClient{
 		client: &http.Client{Timeout: 30 * time.Second},
@@ -126,6 +129,7 @@ func NewHTTPControlPlaneClient(options ...HTTPControlPlaneClientOption) *HTTPCon
 	return c
 }
 
+// Notify sends a data flow callback. A non-2xx response is returned as a *ControlPlaneError.
 func (c *HTTPControlPlaneClient) Notify(ctx context.Context, controlPlane ControlPlane, action string, message DataFlowStatusMessage) error {
 	endpoint, err := transferURL(controlPlane.Endpoint, message.DataFlowID, "dataflow", action)
 	if err != nil {

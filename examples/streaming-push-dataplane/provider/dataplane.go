@@ -37,6 +37,7 @@ func NewDataPlane(publisherService *EventPublisherService) (*ProviderDataPlane, 
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
+		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(dataplane.prepareProcessor),
 		dsdk.WithStartProcessor(dataplane.startProcessor),
 		dsdk.WithSuspendProcessor(dataplane.suspendProcessor),
@@ -50,10 +51,13 @@ func NewDataPlane(publisherService *EventPublisherService) (*ProviderDataPlane, 
 	return dataplane, nil
 }
 
+// SDK returns the data plane's SDK instance.
+func (d *ProviderDataPlane) SDK() *dsdk.DataPlaneSDK {
+	return d.sdk
+}
+
 func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
-	// Start signaling server
-	common.StartServer(d.signalingServer, "[Provider Data Plane] Signaling server")
+	d.signalingServer = common.StartSignalingServer(d.sdk, common.ProviderSignalingPort, "[Provider Data Plane] Signaling server")
 }
 
 func (d *ProviderDataPlane) Shutdown(ctx context.Context) {

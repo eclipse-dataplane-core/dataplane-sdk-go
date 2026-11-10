@@ -644,7 +644,7 @@ func newSdk(db *sql.DB) (*dsdk.DataPlaneSDK, error) {
 			if isAsync(flow) {
 				return &dsdk.DataFlowStatusMessage{State: dsdk.Starting}, nil
 			}
-			if !flow.Consumer && flow.IsPull() {
+			if flow.IsPull() {
 				address, err := dsdk.NewDataAddressBuilder().
 					EndpointType("https://w3id.org/idsa/v4.1/HTTP").
 					Endpoint("https://provider.example.com/data").

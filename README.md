@@ -85,19 +85,23 @@ The SDK implements the specification's state machine (INITIALIZED, PREPARING, PR
 COMPLETED, TERMINATED; COMPLETED and TERMINATED are final) and persists every transition. Your code plugs in as
 processors:
 
-| Option                    | Invoked for                               | Reports                          |
-|---------------------------|-------------------------------------------|----------------------------------|
-| `WithPrepareProcessor`    | `/prepare` (consumer)                     | PREPARED or PREPARING            |
-| `WithStartProcessor`      | `/start` (provider), `/started` (consumer) | STARTED or STARTING              |
-| `WithResumeProcessor`     | `/resume`                                 | STARTED                          |
-| `WithSuspendProcessor`    | `/suspend`                                |                                  |
-| `WithTerminateProcessor`  | `/terminate`                              |                                  |
-| `WithCompleteProcessor`   | `/completed`                              |                                  |
+| Option                    | Invoked for            | Kind      | Reports               |
+|---------------------------|------------------------|-----------|-----------------------|
+| `WithPrepareProcessor`    | `/prepare` (consumer)  | processor | PREPARED or PREPARING |
+| `WithStartProcessor`      | `/start` (provider)    | processor | STARTED or STARTING   |
+| `WithStartedProcessor`    | `/started` (consumer)  | handler   |                       |
+| `WithResumeProcessor`     | `/resume`              | processor | STARTED               |
+| `WithSuspendProcessor`    | `/suspend`             | handler   |                       |
+| `WithTerminateProcessor`  | `/terminate`           | handler   |                       |
+| `WithCompleteProcessor`   | `/completed`           | handler   |                       |
 
-A processor may modify the `DataFlow` it receives; the SDK persists it. It returns a `DataFlowStatusMessage` with the
-resulting state and optionally a `DataAddress`; the SDK fills in `messageId` and `dataFlowId`. A re-delivered
-`/prepare` or `/started` reaches the processor again with `ProcessorOptions.Duplicate` set; re-delivered suspend,
-terminate and completed messages are acknowledged without invoking the handler.
+Processors and handlers may modify the `DataFlow` they receive; the SDK persists it. A processor
+(`DataFlowProcessor`) returns a `DataFlowStatusMessage` with the resulting state and optionally a `DataAddress`; the
+SDK fills in `messageId` and `dataFlowId`. A handler (`DataFlowHandler`) only returns an error, which aborts the
+operation and leaves the data flow unchanged; the SDK then performs the transition itself. On `/started` the address
+received from the provider (pull) is already on the flow (`SourceDataAddress`) when the handler runs, and the flow
+always ends up STARTED. A re-delivered `/prepare` reaches the processor again with `ProcessorOptions.Duplicate` set;
+re-delivered started, suspend, terminate and completed messages are acknowledged without invoking the handler.
 
 - **Synchronous or asynchronous.** Report PREPARED or STARTED to complete the transition in the response (200).
   Report PREPARING or STARTING to answer 202 and complete it later with `NotifyPrepared` or `NotifyStarted`.

@@ -40,7 +40,7 @@ func NewDataPlane(eventSubscriber *natsservices.EventSubscriber) (*ConsumerDataP
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(dataplane.prepareProcessor),
-		dsdk.WithStartProcessor(dataplane.startProcessor),
+		dsdk.WithStartedProcessor(dataplane.startedProcessor),
 	)
 	if err != nil {
 		return nil, err
@@ -76,29 +76,26 @@ func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared}, nil
 }
 
-func (d *ConsumerDataPlane) startProcessor(_ context.Context,
-	flow *dsdk.DataFlow,
-	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
-
-	endpoint := options.DataAddress.Endpoint
-	token, found := parseToken(natsservices.TokenKey, options.DataAddress)
+// startedProcessor runs on /started: the provider's DataAddress is on the flow as its source address.
+func (d *ConsumerDataPlane) startedProcessor(_ context.Context, flow *dsdk.DataFlow) error {
+	endpoint := flow.SourceDataAddress.Endpoint
+	token, found := parseToken(natsservices.TokenKey, flow.SourceDataAddress)
 	if !found {
-		return nil, errors.New("token not found in endpoint properties")
+		return errors.New("token not found in endpoint properties")
 	}
-	channel, found := parseToken(natsservices.ChannelKey, options.DataAddress)
+	channel, found := parseToken(natsservices.ChannelKey, flow.SourceDataAddress)
 	if !found {
-		return nil, errors.New("channel not found in endpoint properties")
+		return errors.New("channel not found in endpoint properties")
 	}
 
 	d.eventSubscriber.CloseConnection(flow.ID) // Close any existing connection
 
 	err := d.eventSubscriber.Subscribe(channel, endpoint, channel, token)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	log.Printf("[Consumer Data Plane] Started NATS subscriber for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
+	return nil
 }
 
 func (d *ConsumerDataPlane) terminateProcessor(_ context.Context, flow *dsdk.DataFlow) error {

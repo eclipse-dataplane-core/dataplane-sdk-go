@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// DataFlowProcessor is an extension point for handling SDK data flow events. Implementations may modify the data flow
-// instance, which is persisted by the SDK, and return the resulting state, an optional DataAddress and an optional
-// error description. The SDK sets the messageId and dataFlowId of the returned message. If the message is a duplicate,
-// implementations must support idempotent behavior.
+// DataFlowProcessor is an extension point for prepare (consumer), start (provider) and resume. Implementations may
+// modify the data flow instance, which is persisted by the SDK, and return the resulting state, an optional DataAddress
+// and an optional error description. The SDK sets the messageId and dataFlowId of the returned message. If the message
+// is a duplicate, implementations must support idempotent behavior.
 type DataFlowProcessor func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error)
 
 // ProcessorOptions are passed to a DataFlowProcessor.
@@ -23,7 +23,7 @@ type ProcessorOptions struct {
 	DataAddress *DataAddress
 }
 
-// DataFlowHandler is an extension point for suspend, terminate and complete. It runs before the transition is
+// DataFlowHandler is an extension point for started, suspend, terminate and complete. It runs before the transition is
 // persisted; an error aborts the operation and leaves the data flow unchanged.
 type DataFlowHandler func(context.Context, *DataFlow) error
 
@@ -44,6 +44,7 @@ type DataPlaneSDK struct {
 
 	onPrepare   DataFlowProcessor
 	onStart     DataFlowProcessor
+	onStarted   DataFlowHandler
 	onResume    DataFlowProcessor
 	onTerminate DataFlowHandler
 	onSuspend   DataFlowHandler
@@ -172,8 +173,9 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 }
 
 // Started is called on the consumer when the provider has started the transfer. For pull transfers the message must
-// carry the DataAddress to obtain the data from; for push transfers it must not carry one.
-// It invokes the onStart processor and persists the flow.
+// carry the DataAddress to obtain the data from; for push transfers it must not carry one. It records the received
+// DataAddress on the flow (SourceDataAddress), invokes the started handler (WithStartedProcessor), transitions the
+// flow to STARTED and persists it. A duplicate message for a STARTED flow is acknowledged without invoking the handler.
 func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFlowStartedNotificationMessage) (*DataFlowStatusMessage, error) {
 	if err := message.Validate(); err != nil {
 		return nil, err
@@ -198,25 +200,24 @@ func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFl
 			return fmt.Errorf("%w: a started message for a push transfer must not contain a data address", ErrInvalidInput)
 		}
 
-		var duplicate bool
+		// the consumer already handed out its DataAddress (if any) in the prepare response, so the response never
+		// carries one
+		response = &DataFlowStatusMessage{MessageID: uuid.NewString(), DataFlowID: flow.ID, State: Started}
 		switch flow.State {
 		case Started:
-			duplicate = true
+			return nil // duplicate message, skip processing
 		case Prepared, Starting:
 		default:
 			return fmt.Errorf("%w: data flow %s cannot be started from state %s", ErrInvalidTransition, flow.ID, flow.State)
 		}
 
 		dsdk.setReceivedAddress(flow, message.DataAddress)
-		response, err = dsdk.process(ctx, dsdk.onStart, flow, &ProcessorOptions{Duplicate: duplicate, DataAddress: message.DataAddress})
-		if err != nil {
+		if err := dsdk.onStarted(ctx, flow); err != nil {
+			return fmt.Errorf("starting data flow %s: %w", flow.ID, err)
+		}
+		if err := flow.TransitionToStarted(); err != nil {
 			return err
 		}
-		if err := dsdk.startState(response, flow); err != nil {
-			return err
-		}
-		// the consumer already handed out its DataAddress (if any) in the prepare response
-		response.DataAddress = nil
 		if err := dsdk.Store.Save(ctx, flow); err != nil {
 			return fmt.Errorf("saving data flow %s: %w", flow.ID, err)
 		}
@@ -542,10 +543,21 @@ func WithPrepareProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	}
 }
 
-// WithStartProcessor sets the processor invoked for /start on the provider and for /started on the consumer.
+// WithStartProcessor sets the processor invoked for /start on the provider. It reports STARTED, or STARTING to
+// complete asynchronously with NotifyStarted; for pull transfers it provides the DataAddress the consumer pulls from.
+// The default reports STARTED.
 func WithStartProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onStart = processor
+	}
+}
+
+// WithStartedProcessor sets the handler invoked for /started on the consumer, e.g. to start pulling data or to accept
+// pushed data. For pull transfers the received DataAddress is on the flow (SourceDataAddress) when it runs. An error
+// aborts the operation and leaves the flow unchanged; otherwise the flow transitions to STARTED.
+func WithStartedProcessor(handler DataFlowHandler) DataPlaneSDKOption {
+	return func(sdk *DataPlaneSDK) {
+		sdk.onStarted = handler
 	}
 }
 
@@ -604,6 +616,9 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 	}
 	if sdk.onStart == nil {
 		sdk.onStart = stateProcessor(Started)
+	}
+	if sdk.onStarted == nil {
+		sdk.onStarted = noopHandler
 	}
 	if sdk.onResume == nil {
 		sdk.onResume = stateProcessor(Started)

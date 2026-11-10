@@ -257,10 +257,10 @@ func Test_Start_StoreError(t *testing.T) {
 
 func Test_Started_Pull(t *testing.T) {
 	address := newDataAddress()
-	var received *ProcessorOptions
-	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
-		received = options
-		return &DataFlowStatusMessage{State: Started}, nil
+	var seen *DataAddress
+	sdk, store := newTestSDK(t, WithStartedProcessor(func(_ context.Context, flow *DataFlow) error {
+		seen = flow.SourceDataAddress // the received address is on the flow when the handler runs
+		return nil
 	}))
 	store.put(consumerFlow("flow", pullProfile, Prepared))
 
@@ -270,12 +270,63 @@ func Test_Started_Pull(t *testing.T) {
 	assert.Equal(t, "flow", response.DataFlowID)
 	assert.NotEmpty(t, response.MessageID)
 	assert.Nil(t, response.DataAddress)
-	assert.Equal(t, address, received.DataAddress)
-	assert.False(t, received.Duplicate)
+	assert.Equal(t, address, seen)
 
 	flow := store.get(t, "flow")
 	assert.Equal(t, Started, flow.State)
 	assert.Equal(t, address, flow.SourceDataAddress)
+}
+
+func Test_Started_DoesNotInvokeStartProcessor(t *testing.T) {
+	sdk, store := newTestSDK(t, WithStartProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+		t.Fatal("the start processor serves the provider's /start only")
+		return nil, nil
+	}))
+	store.put(consumerFlow("flow", pushProfile, Prepared))
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	require.NoError(t, err)
+}
+
+func Test_Started_HandlerError(t *testing.T) {
+	sdk, store := newTestSDK(t, WithStartedProcessor(func(context.Context, *DataFlow) error {
+		return errors.New("boom")
+	}))
+	store.put(consumerFlow("flow", pullProfile, Prepared))
+
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m", DataAddress: newDataAddress()})
+	assert.ErrorContains(t, err, "boom")
+	flow := store.get(t, "flow")
+	assert.Equal(t, Prepared, flow.State)
+	assert.Nil(t, flow.SourceDataAddress, "a failed /started leaves the flow unchanged")
+}
+
+// Test_Started_KeepsPushConsumerAddress is the regression test for the address a push consumer hands out at
+// prepare: /started must not replace it, so a later /resume returns it again.
+func Test_Started_KeepsPushConsumerAddress(t *testing.T) {
+	prepared := newDataAddress()
+	other := &DataAddress{EndpointType: "https://w3id.org/idsa/v4.1/HTTP", Endpoint: "https://other.example.com"}
+	sdk, store := newTestSDK(t,
+		WithPrepareProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+			return &DataFlowStatusMessage{State: Prepared, DataAddress: prepared}, nil
+		}),
+		// a start processor written for the provider side; it must not affect the consumer
+		WithStartProcessor(func(context.Context, *DataFlow, *DataPlaneSDK, *ProcessorOptions) (*DataFlowStatusMessage, error) {
+			return &DataFlowStatusMessage{State: Started, DataAddress: other}, nil
+		}),
+	)
+	msg := createPrepareMessage(pushProfile)
+	response, err := sdk.Prepare(context.Background(), msg)
+	require.NoError(t, err)
+	assert.Equal(t, prepared, response.DataAddress)
+
+	_, err = sdk.Started(context.Background(), msg.DataFlowID, DataFlowStartedNotificationMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.Equal(t, prepared, store.get(t, msg.DataFlowID).DestinationDataAddress)
+
+	require.NoError(t, sdk.Suspend(context.Background(), msg.DataFlowID, DataFlowSuspendMessage{MessageID: "m"}))
+	resumed, err := sdk.Resume(context.Background(), msg.DataFlowID, DataFlowResumeMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.Equal(t, prepared, resumed.DataAddress)
 }
 
 func Test_Started_Push(t *testing.T) {
@@ -310,16 +361,17 @@ func Test_Started_DataAddressRules(t *testing.T) {
 }
 
 func Test_Started_Duplicate(t *testing.T) {
-	var received *ProcessorOptions
-	sdk, store := newTestSDK(t, WithStartProcessor(func(_ context.Context, _ *DataFlow, _ *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
-		received = options
-		return &DataFlowStatusMessage{State: Started}, nil
+	sdk, store := newTestSDK(t, WithStartedProcessor(func(context.Context, *DataFlow) error {
+		t.Fatal("the handler must not be invoked for a duplicate")
+		return nil
 	}))
 	store.put(consumerFlow("flow", pushProfile, Started))
 
-	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	response, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
 	require.NoError(t, err)
-	assert.True(t, received.Duplicate)
+	assert.Equal(t, Started, response.State)
+	assert.Equal(t, "flow", response.DataFlowID)
+	assert.NotEmpty(t, response.MessageID)
 }
 
 func Test_Started_WrongState(t *testing.T) {

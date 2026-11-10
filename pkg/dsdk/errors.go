@@ -17,6 +17,12 @@ var (
 	ErrInvalidInput = errors.New("invalid input")
 	// ErrInvalidTransition Sentinel error to indicate an invalid state transition, e.g. of a data flow
 	ErrInvalidTransition = errors.New("invalid transition")
+	// ErrUnauthorized indicates a request whose caller could not be authenticated (HTTP 401)
+	ErrUnauthorized = errors.New("unauthorized")
+	// ErrForbidden indicates an authenticated caller that may not access the resource (HTTP 403)
+	ErrForbidden = errors.New("forbidden")
+	// ErrAuthorizationNotSupported indicates an authorization type without a registered Authorization (HTTP 400)
+	ErrAuthorizationNotSupported = errors.New("authorization not supported")
 )
 
 // NewValidationError Helper to create new ValidationError

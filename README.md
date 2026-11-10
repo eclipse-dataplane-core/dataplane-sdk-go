@@ -38,18 +38,32 @@ qualities of service, and error handling.
 - Each call transitions the flow, POSTs a `DataFlowStatusMessage` to
   `{controlPlaneURL}/transfers/{id}/dataflow/{prepared|started|completed|errored}` and persists the flow only when the
   control plane answers 2xx. 5xx responses and network errors are retried (see `RetryPolicy`).
-- Configure the endpoint with `WithControlPlane(url)`, or register control planes (see below); see
-  `examples/async-start-dataplane`.
+- Configure the control plane with `WithControlPlane(dsdk.ControlPlane{...})`, or register control planes (see
+  below); see `examples/async-start-dataplane`.
 
 ### 6. Registration
 
 - Control planes register with the data plane: configure `WithControlPlaneStore(store)` (`memory` and `postgres`
   implementations are provided, see `control_plane_schema.sql`) and `NewHandler` serves `PUT /v1/controlplanes` and
   `DELETE /v1/controlplanes/{controlPlaneId}`, or call `RegisterControlPlane` / `DeleteControlPlane` directly.
-- Prepare and start record the calling control plane on the data flow (`WithControlPlaneIdentifier`; by default the
-  only registered control plane), and the `Notify*` callbacks go to its registered endpoint.
-- The data plane registers with a control plane via `RegisterDataPlane(ctx, controlPlaneURL, message)`
-  (`PUT {controlPlaneURL}/dataplanes`) and `DeregisterDataPlane` (`DELETE {controlPlaneURL}/dataplanes/{id}`).
+- Prepare and start record the authenticated control plane on the data flow, and the `Notify*` callbacks go to its
+  registered endpoint.
+- The data plane registers with a control plane via `RegisterDataPlane(ctx, controlPlane, message)`
+  (`PUT {endpoint}/dataplanes`) and `DeregisterDataPlane` (`DELETE {endpoint}/dataplanes/{id}`).
+
+### 7. Authorization
+
+- Authorization is mandatory. Register one or more authorization profiles with `WithAuthorization(a)`; the SDK ships
+  `oauth2_client_credentials` in `pkg/authorization/oauth2` (outbound: client credentials grant against the
+  registration's `tokenEndpoint`; inbound: bearer JWTs verified against a JWKS endpoint, `sub` = control plane id).
+- Every endpoint served by `NewHandler` requires an `Authorization` header that a registered profile accepts (401
+  otherwise). Requests for a data flow or registration of another control plane are answered with 403.
+  `WithAuthenticator` replaces the scheme.
+- Outbound requests carry the `Authorization` header of the target control plane's authorization entry. Registrations
+  with an authorization type no profile handles are rejected.
+- Control plane endpoints must use https, except for loopback hosts; `WithInsecureEndpoints()` allows http.
+- `WithAuthorizationDisabled()` turns authorization off explicitly, e.g. for the TCK, which sends
+  `Authorization: dummy-authorization`.
 
 ## Key Features
 

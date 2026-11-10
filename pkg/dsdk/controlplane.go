@@ -32,9 +32,9 @@ var ErrControlPlaneNotRegistered = errors.New("control plane not registered")
 
 // ControlPlaneClient calls the control plane endpoints defined by the Data Plane Signaling specification.
 type ControlPlaneClient interface {
-	// Notify sends the status message to {controlPlaneURL}/transfers/{message.DataFlowID}/dataflow/{action}.
-	Notify(ctx context.Context, controlPlaneURL string, action string, message DataFlowStatusMessage) error
-	// GetAgreement returns the raw JSON body of GET {controlPlaneURL}/transfers/{dataFlowID}/agreement.
+	// Notify sends the status message to {controlPlane.Endpoint}/transfers/{message.DataFlowID}/dataflow/{action}.
+	Notify(ctx context.Context, controlPlane ControlPlane, action string, message DataFlowStatusMessage) error
+	// GetAgreement returns the raw JSON body of GET {controlPlane.Endpoint}/transfers/{dataFlowID}/agreement.
 	//
 	// The body is the specification's AgreementResponse, i.e. a DSP Agreement: a JSON-LD ODRL policy with
 	// @context, @id, @type, target, assigner, assignee, timestamp and permission/prohibition/obligation rule trees
@@ -43,17 +43,22 @@ type ControlPlaneClient interface {
 	// unmarshal what they need.
 	//
 	// TODO: return a typed Agreement model once the SDK needs to evaluate policies (DSP Agreement / ODRL).
-	GetAgreement(ctx context.Context, controlPlaneURL string, dataFlowID string) (json.RawMessage, error)
-	// RegisterDataPlane creates or replaces the registration of this data plane: PUT {controlPlaneURL}/dataplanes.
-	RegisterDataPlane(ctx context.Context, controlPlaneURL string, message DataPlaneRegistrationMessage) error
-	// DeregisterDataPlane removes the registration of this data plane: DELETE {controlPlaneURL}/dataplanes/{dataPlaneID}.
-	DeregisterDataPlane(ctx context.Context, controlPlaneURL string, dataPlaneID string) error
+	GetAgreement(ctx context.Context, controlPlane ControlPlane, dataFlowID string) (json.RawMessage, error)
+	// RegisterDataPlane creates or replaces the registration of this data plane: PUT {controlPlane.Endpoint}/dataplanes.
+	RegisterDataPlane(ctx context.Context, controlPlane ControlPlane, message DataPlaneRegistrationMessage) error
+	// DeregisterDataPlane removes the registration of this data plane:
+	// DELETE {controlPlane.Endpoint}/dataplanes/{dataPlaneID}.
+	DeregisterDataPlane(ctx context.Context, controlPlane ControlPlane, dataPlaneID string) error
 }
 
-// ControlPlaneResolver returns the endpoint of the control plane with the given id.
+// ControlPlaneResolver returns the control plane (endpoint and authorization entry) with the given id.
 type ControlPlaneResolver interface {
-	ControlPlaneURL(ctx context.Context, controlPlaneID string) (string, error)
+	ControlPlane(ctx context.Context, controlPlaneID string) (*ControlPlane, error)
 }
+
+// AuthorizationHeaderFunc returns the Authorization header value for requests authorized by the entry, or "" for no
+// header.
+type AuthorizationHeaderFunc func(ctx context.Context, entry AuthorizationEntry) (string, error)
 
 // ControlPlaneError is returned when the control plane answers a request with a non-2xx status code.
 type ControlPlaneError struct {
@@ -80,9 +85,10 @@ var DefaultRetryPolicy = RetryPolicy{Attempts: 3, BaseDelay: 200 * time.Millisec
 
 // HTTPControlPlaneClient is the default ControlPlaneClient.
 type HTTPControlPlaneClient struct {
-	client *http.Client
-	retry  RetryPolicy
-	sleep  func(ctx context.Context, d time.Duration) error
+	client    *http.Client
+	retry     RetryPolicy
+	sleep     func(ctx context.Context, d time.Duration) error
+	authorize AuthorizationHeaderFunc
 }
 
 type HTTPControlPlaneClientOption func(*HTTPControlPlaneClient)
@@ -91,6 +97,14 @@ type HTTPControlPlaneClientOption func(*HTTPControlPlaneClient)
 func WithHTTPClient(client *http.Client) HTTPControlPlaneClientOption {
 	return func(c *HTTPControlPlaneClient) {
 		c.client = client
+	}
+}
+
+// WithAuthorizationHeader sets how the client computes the Authorization header from the target control plane's
+// authorization entry. NewDataPlaneSDK sets it to the SDK's registered Authorizations if it is not set.
+func WithAuthorizationHeader(authorize AuthorizationHeaderFunc) HTTPControlPlaneClientOption {
+	return func(c *HTTPControlPlaneClient) {
+		c.authorize = authorize
 	}
 }
 
@@ -112,8 +126,8 @@ func NewHTTPControlPlaneClient(options ...HTTPControlPlaneClientOption) *HTTPCon
 	return c
 }
 
-func (c *HTTPControlPlaneClient) Notify(ctx context.Context, controlPlaneURL string, action string, message DataFlowStatusMessage) error {
-	endpoint, err := transferURL(controlPlaneURL, message.DataFlowID, "dataflow", action)
+func (c *HTTPControlPlaneClient) Notify(ctx context.Context, controlPlane ControlPlane, action string, message DataFlowStatusMessage) error {
+	endpoint, err := transferURL(controlPlane.Endpoint, message.DataFlowID, "dataflow", action)
 	if err != nil {
 		return err
 	}
@@ -121,7 +135,7 @@ func (c *HTTPControlPlaneClient) Notify(ctx context.Context, controlPlaneURL str
 	if err != nil {
 		return fmt.Errorf("encoding %s callback: %w", action, err)
 	}
-	_, err = c.do(ctx, action, func() (*http.Request, error) {
+	_, err = c.do(ctx, controlPlane, action, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -134,12 +148,12 @@ func (c *HTTPControlPlaneClient) Notify(ctx context.Context, controlPlaneURL str
 
 // GetAgreement fetches the agreement of a data flow and returns the raw JSON body; see ControlPlaneClient.GetAgreement
 // for why it is not decoded. A non-2xx response is returned as a *ControlPlaneError.
-func (c *HTTPControlPlaneClient) GetAgreement(ctx context.Context, controlPlaneURL string, dataFlowID string) (json.RawMessage, error) {
-	endpoint, err := transferURL(controlPlaneURL, dataFlowID, "agreement")
+func (c *HTTPControlPlaneClient) GetAgreement(ctx context.Context, controlPlane ControlPlane, dataFlowID string) (json.RawMessage, error) {
+	endpoint, err := transferURL(controlPlane.Endpoint, dataFlowID, "agreement")
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.do(ctx, ActionAgreement, func() (*http.Request, error) {
+	body, err := c.do(ctx, controlPlane, ActionAgreement, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
@@ -156,9 +170,9 @@ func (c *HTTPControlPlaneClient) GetAgreement(ctx context.Context, controlPlaneU
 	return body, nil
 }
 
-// RegisterDataPlane sends PUT {controlPlaneURL}/dataplanes. A non-2xx response is returned as a *ControlPlaneError.
-func (c *HTTPControlPlaneClient) RegisterDataPlane(ctx context.Context, controlPlaneURL string, message DataPlaneRegistrationMessage) error {
-	endpoint, err := joinURL(controlPlaneURL, "dataplanes")
+// RegisterDataPlane sends PUT {controlPlane.Endpoint}/dataplanes. A non-2xx response is returned as a *ControlPlaneError.
+func (c *HTTPControlPlaneClient) RegisterDataPlane(ctx context.Context, controlPlane ControlPlane, message DataPlaneRegistrationMessage) error {
+	endpoint, err := joinURL(controlPlane.Endpoint, "dataplanes")
 	if err != nil {
 		return err
 	}
@@ -166,7 +180,7 @@ func (c *HTTPControlPlaneClient) RegisterDataPlane(ctx context.Context, controlP
 	if err != nil {
 		return fmt.Errorf("encoding data plane registration: %w", err)
 	}
-	_, err = c.do(ctx, ActionRegisterDataPlane, func() (*http.Request, error) {
+	_, err = c.do(ctx, controlPlane, ActionRegisterDataPlane, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -177,25 +191,33 @@ func (c *HTTPControlPlaneClient) RegisterDataPlane(ctx context.Context, controlP
 	return err
 }
 
-// DeregisterDataPlane sends DELETE {controlPlaneURL}/dataplanes/{dataPlaneID}. A non-2xx response is returned as a
-// *ControlPlaneError.
-func (c *HTTPControlPlaneClient) DeregisterDataPlane(ctx context.Context, controlPlaneURL string, dataPlaneID string) error {
+// DeregisterDataPlane sends DELETE {controlPlane.Endpoint}/dataplanes/{dataPlaneID}. A non-2xx response is returned as
+// a *ControlPlaneError.
+func (c *HTTPControlPlaneClient) DeregisterDataPlane(ctx context.Context, controlPlane ControlPlane, dataPlaneID string) error {
 	if dataPlaneID == "" {
 		return fmt.Errorf("%w: data plane id cannot be empty", ErrInvalidInput)
 	}
-	endpoint, err := joinURL(controlPlaneURL, "dataplanes", dataPlaneID)
+	endpoint, err := joinURL(controlPlane.Endpoint, "dataplanes", dataPlaneID)
 	if err != nil {
 		return err
 	}
-	_, err = c.do(ctx, ActionDeregisterDataPlane, func() (*http.Request, error) {
+	_, err = c.do(ctx, controlPlane, ActionDeregisterDataPlane, func() (*http.Request, error) {
 		return http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
 	})
 	return err
 }
 
-// do sends the request built by newRequest, retrying on 5xx and transport errors, and returns the body of a 2xx
-// response.
-func (c *HTTPControlPlaneClient) do(ctx context.Context, action string, newRequest func() (*http.Request, error)) ([]byte, error) {
+// do sends the request built by newRequest with the Authorization header for the control plane, retrying on 5xx and
+// transport errors, and returns the body of a 2xx response.
+func (c *HTTPControlPlaneClient) do(ctx context.Context, controlPlane ControlPlane, action string, newRequest func() (*http.Request, error)) ([]byte, error) {
+	var authorization string
+	if c.authorize != nil {
+		header, err := c.authorize(ctx, controlPlane.Authorization)
+		if err != nil {
+			return nil, fmt.Errorf("authorizing %s for control plane %s: %w", action, controlPlane.ID, err)
+		}
+		authorization = header
+	}
 	attempts := max(c.retry.Attempts, 1)
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -207,6 +229,9 @@ func (c *HTTPControlPlaneClient) do(ctx context.Context, action string, newReque
 		req, err := newRequest()
 		if err != nil {
 			return nil, fmt.Errorf("creating %s request: %w", action, err)
+		}
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
 		}
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -278,22 +303,26 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// staticResolver returns the same control plane URL for every control plane id.
+// staticResolver returns the same control plane for every control plane id.
 type staticResolver struct {
-	url string
+	controlPlane ControlPlane
 }
 
-func (r staticResolver) ControlPlaneURL(context.Context, string) (string, error) {
-	if r.url == "" {
-		return "", ErrControlPlaneNotRegistered
+func (r staticResolver) ControlPlane(context.Context, string) (*ControlPlane, error) {
+	if r.controlPlane.Endpoint == "" {
+		return nil, ErrControlPlaneNotRegistered
 	}
-	return r.url, nil
+	return r.controlPlane.Copy(), nil
 }
 
-// WithControlPlane configures a single control plane endpoint, used for every data flow.
-func WithControlPlane(url string) DataPlaneSDKOption {
+// WithControlPlane configures a single control plane, used for the callbacks of every data flow. Its authorization
+// entry selects the outbound Authorization; an empty type sends no Authorization header, which is only allowed with
+// WithAuthorizationDisabled. NewDataPlaneSDK rejects an endpoint that is not an absolute URL, or that uses http://
+// for a non-loopback host without WithInsecureEndpoints.
+func WithControlPlane(controlPlane ControlPlane) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
-		sdk.controlPlanes = staticResolver{url: url}
+		sdk.staticControlPlane = controlPlane.Copy()
+		sdk.controlPlanes = staticResolver{controlPlane: *controlPlane.Copy()}
 	}
 }
 

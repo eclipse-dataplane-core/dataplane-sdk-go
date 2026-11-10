@@ -11,7 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// serve sends the request authenticated as testCaller.
 func serve(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return serveAs(t, handler, "Test "+testCaller, method, path, body)
+}
+
+// serveAs sends the request with the given Authorization header ("" for none).
+func serveAs(t *testing.T, handler http.Handler, authorization string, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *strings.Reader
 	switch b := body.(type) {
@@ -25,6 +32,9 @@ func serve(t *testing.T, handler http.Handler, method, path string, body any) *h
 		reader = strings.NewReader(string(data))
 	}
 	req := httptest.NewRequest(method, path, reader)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr

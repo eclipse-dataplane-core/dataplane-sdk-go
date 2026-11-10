@@ -46,6 +46,11 @@ type DataPlaneSDK struct {
 	controlPlanes      ControlPlaneResolver
 	controlPlaneClient ControlPlaneClient
 	controlPlaneStore  ControlPlaneStore
+	staticControlPlane *ControlPlane
+
+	authorizations        map[string]Authorization
+	authorizationDisabled bool
+	insecureEndpoints     bool
 }
 
 // Prepare is called on the consumer to prepare for receiving data.
@@ -65,6 +70,11 @@ func (dsdk *DataPlaneSDK) Prepare(ctx context.Context, message DataFlowPrepareMe
 			return fmt.Errorf("performing de-duplication for %s: %w", id, err)
 		}
 
+		if flow != nil {
+			if err := dsdk.checkCaller(controlPlaneID, flow); err != nil {
+				return err
+			}
+		}
 		switch {
 		case flow != nil && (flow.State == Preparing || flow.State == Prepared):
 			// duplicate message, pass to processor to generate a data address if needed
@@ -163,10 +173,14 @@ func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFl
 		return nil, err
 	}
 	var response *DataFlowStatusMessage
+	callerID := ControlPlaneIDFromContext(ctx)
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
 			return fmt.Errorf("starting data flow %s: %w", id, err)
+		}
+		if err := dsdk.checkCaller(callerID, flow); err != nil {
+			return err
 		}
 		if !flow.Consumer {
 			return fmt.Errorf("%w: started is only valid for consumer data flows", ErrInvalidInput)
@@ -213,10 +227,14 @@ func (dsdk *DataPlaneSDK) Suspend(ctx context.Context, id string, message DataFl
 	if err := message.Validate(); err != nil {
 		return err
 	}
+	callerID := ControlPlaneIDFromContext(ctx)
 	return dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
 			return fmt.Errorf("suspending data flow %s: %w", id, err)
+		}
+		if err := dsdk.checkCaller(callerID, flow); err != nil {
+			return err
 		}
 
 		if flow.State == Suspended {
@@ -246,10 +264,14 @@ func (dsdk *DataPlaneSDK) Resume(ctx context.Context, id string, message DataFlo
 		return nil, err
 	}
 	var response *DataFlowStatusMessage
+	callerID := ControlPlaneIDFromContext(ctx)
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
 			return fmt.Errorf("resuming data flow %s: %w", id, err)
+		}
+		if err := dsdk.checkCaller(callerID, flow); err != nil {
+			return err
 		}
 
 		if flow.State != Suspended {
@@ -288,10 +310,14 @@ func (dsdk *DataPlaneSDK) Terminate(ctx context.Context, id string, message Data
 	if err := message.Validate(); err != nil {
 		return err
 	}
+	callerID := ControlPlaneIDFromContext(ctx)
 	return dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
 			return fmt.Errorf("terminating data flow %s: %w", id, err)
+		}
+		if err := dsdk.checkCaller(callerID, flow); err != nil {
+			return err
 		}
 
 		if flow.State == Terminated {
@@ -317,9 +343,13 @@ func (dsdk *DataPlaneSDK) Terminate(ctx context.Context, id string, message Data
 // Status returns the data flow with the given id.
 func (dsdk *DataPlaneSDK) Status(ctx context.Context, id string) (*DataFlow, error) {
 	var flow *DataFlow
+	callerID := ControlPlaneIDFromContext(ctx)
 	err := dsdk.execute(ctx, func(ctx context.Context) error {
 		found, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
+			return err
+		}
+		if err := dsdk.checkCaller(callerID, found); err != nil {
 			return err
 		}
 		flow = found
@@ -334,10 +364,14 @@ func (dsdk *DataPlaneSDK) Complete(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: data flow id cannot be empty", ErrInvalidInput)
 	}
 
+	callerID := ControlPlaneIDFromContext(ctx)
 	return dsdk.execute(ctx, func(ctx context.Context) error {
 		flow, err := dsdk.Store.FindById(ctx, id)
 		if err != nil {
 			return fmt.Errorf("completing data flow %s: %w", id, err)
+		}
+		if err := dsdk.checkCaller(callerID, flow); err != nil {
+			return err
 		}
 
 		if flow.State == Completed { // de-duplication
@@ -568,6 +602,15 @@ func NewDataPlaneSDK(options ...DataPlaneSDKOption) (*DataPlaneSDK, error) {
 	}
 	if sdk.controlPlaneClient == nil {
 		sdk.controlPlaneClient = NewHTTPControlPlaneClient()
+	}
+	// the HTTP client authorizes its requests with the SDK's registered Authorizations unless configured otherwise
+	if client, ok := sdk.controlPlaneClient.(*HTTPControlPlaneClient); ok && client.authorize == nil {
+		client.authorize = sdk.authorizationHeader
+	}
+	if sdk.staticControlPlane != nil {
+		if err := sdk.checkEndpoint(sdk.staticControlPlane.Endpoint); err != nil {
+			return nil, err
+		}
 	}
 	if sdk.controlPlanes == nil && sdk.controlPlaneStore != nil {
 		sdk.controlPlanes = storeResolver{store: sdk.controlPlaneStore}

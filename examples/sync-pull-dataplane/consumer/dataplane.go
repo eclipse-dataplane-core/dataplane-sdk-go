@@ -54,7 +54,7 @@ func NewDataPlane() (*ConsumerDataPlane, error) {
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(dataplane.prepareProcessor),
-		dsdk.WithStartProcessor(dataplane.startProcessor),
+		dsdk.WithStartedProcessor(dataplane.startedProcessor),
 	)
 	if err != nil {
 		return nil, err
@@ -92,18 +92,16 @@ func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared}, nil
 }
 
-func (d *ConsumerDataPlane) startProcessor(_ context.Context,
-	flow *dsdk.DataFlow,
-	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
+// startedProcessor runs on /started: the provider's DataAddress is on the flow as its source address.
+func (d *ConsumerDataPlane) startedProcessor(_ context.Context, flow *dsdk.DataFlow) error {
 	log.Printf("[Consumer Data Plane] Transfer access token available for participant %s dataset %s\n", flow.ParticipantID, flow.DatasetID)
-	endpoint := options.DataAddress.Endpoint
-	token, found := options.DataAddress.Property("token")
+	endpoint := flow.SourceDataAddress.Endpoint
+	token, found := flow.SourceDataAddress.Property("token")
 	if !found {
-		return nil, errors.New("token not found in endpoint properties")
+		return errors.New("token not found in endpoint properties")
 	}
 	d.tokenStore.Create(flow.DatasetID, tokenEntry{datasetID: flow.DatasetID, token: token, endpoint: endpoint})
-	return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
+	return nil
 }
 
 func (d *ConsumerDataPlane) getEndpointToken(w http.ResponseWriter, r *http.Request) {

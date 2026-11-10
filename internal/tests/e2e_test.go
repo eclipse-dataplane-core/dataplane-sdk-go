@@ -211,7 +211,7 @@ func e2eIsAsync(flow *dsdk.DataFlow) bool {
 
 // newE2EDataPlane creates a data plane. A flow whose metadata has "async": true is prepared or started
 // asynchronously; otherwise the consumer provides its push address on prepare and the provider its pull address on
-// start.
+// start. The started handler checks that a pull consumer received the provider's address.
 func newE2EDataPlane(t *testing.T, id string, stores e2eStores) *e2eDataPlane {
 	t.Helper()
 	sdk, err := dsdk.NewDataPlaneSDK(
@@ -226,13 +226,17 @@ func newE2EDataPlane(t *testing.T, id string, stores e2eStores) *e2eDataPlane {
 			return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared, DataAddress: e2eAddress(e2eConsumerAddress)}, nil
 		}),
 		dsdk.WithStartProcessor(func(_ context.Context, flow *dsdk.DataFlow, _ *dsdk.DataPlaneSDK, _ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
-			if flow.Consumer {
-				return &dsdk.DataFlowStatusMessage{State: dsdk.Started}, nil
-			}
 			if e2eIsAsync(flow) {
 				return &dsdk.DataFlowStatusMessage{State: dsdk.Starting}, nil
 			}
 			return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: e2eAddress(e2eProviderAddress)}, nil
+		}),
+		dsdk.WithStartedProcessor(func(_ context.Context, flow *dsdk.DataFlow) error {
+			// a pull consumer finds the provider's address on the flow
+			if flow.IsPull() && (flow.SourceDataAddress == nil || flow.SourceDataAddress.Endpoint != e2eProviderAddress) {
+				return fmt.Errorf("pull consumer started without the provider's address: %+v", flow.SourceDataAddress)
+			}
+			return nil
 		}),
 	)
 	require.NoError(t, err)

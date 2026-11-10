@@ -98,6 +98,18 @@ func Test_WithSuspendProcessor(t *testing.T) {
 	require.NotNil(t, sdk.onSuspend)
 }
 
+func Test_WithStartedProcessor(t *testing.T) {
+	handler := func(context.Context, *DataFlow) error {
+		return nil
+	}
+	sdk := &DataPlaneSDK{}
+
+	option := WithStartedProcessor(handler)
+	option(sdk)
+
+	require.NotNil(t, sdk.onStarted)
+}
+
 func Test_WithResumeProcessor(t *testing.T) {
 	processor := func(context context.Context, flow *DataFlow, sdk *DataPlaneSDK, options *ProcessorOptions) (*DataFlowStatusMessage, error) {
 		return &DataFlowStatusMessage{State: Started}, nil
@@ -140,6 +152,7 @@ func Test_NewDataPlaneSDK_WithoutOptionalFields(t *testing.T) {
 	assert.NotNil(t, sdk.onStart)
 	assert.NotNil(t, sdk.onTerminate)
 	assert.NotNil(t, sdk.onSuspend)
+	assert.NotNil(t, sdk.onStarted)
 	assert.NotNil(t, sdk.onResume)
 	assert.NotNil(t, sdk.onComplete)
 }

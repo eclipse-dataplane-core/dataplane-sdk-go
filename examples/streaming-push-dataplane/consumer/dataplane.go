@@ -51,7 +51,6 @@ func NewDataPlane(authService *natsservices.AuthService,
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(dataPlane.prepareProcessor),
-		dsdk.WithStartProcessor(dataPlane.startProcessor),
 		dsdk.WithSuspendProcessor(dataPlane.suspendProcessor),
 		dsdk.WithTerminateProcessor(dataPlane.terminateProcessor),
 	)
@@ -117,13 +116,6 @@ func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 
 	log.Printf("[Consumer Data Plane] Prepare transfer for %s\n", flow.CounterPartyID)
 	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared, DataAddress: da}, nil
-}
-
-func (d *ConsumerDataPlane) startProcessor(_ context.Context,
-	flow *dsdk.DataFlow,
-	_ *dsdk.DataPlaneSDK,
-	options *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
-	return &dsdk.DataFlowStatusMessage{State: dsdk.Started, DataAddress: options.DataAddress}, nil
 }
 
 func (d *ConsumerDataPlane) suspendProcessor(_ context.Context, flow *dsdk.DataFlow) error {

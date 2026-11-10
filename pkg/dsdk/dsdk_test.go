@@ -341,23 +341,33 @@ func Test_Started_Push(t *testing.T) {
 	assert.Nil(t, response.DataAddress)
 }
 
-func Test_Started_DataAddressRules(t *testing.T) {
-	tests := map[string]struct {
-		profile string
-		address *DataAddress
-	}{
-		"pull without data address": {pullProfile, nil},
-		"push with data address":    {pushProfile, newDataAddress()},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			sdk, store := newTestSDK(t)
-			store.put(consumerFlow("flow", tc.profile, Prepared))
-			_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m", DataAddress: tc.address})
-			assert.ErrorIs(t, err, ErrInvalidInput)
-			assert.Equal(t, Prepared, store.get(t, "flow").State)
-		})
-	}
+// Test_Started_PullWithoutDataAddress: the specification makes the data address of a started message optional, so
+// the SDK accepts a pull transfer without one and the handler sees a nil address.
+func Test_Started_PullWithoutDataAddress(t *testing.T) {
+	invoked := false
+	sdk, store := newTestSDK(t, WithStartedProcessor(func(_ context.Context, flow *DataFlow) error {
+		invoked = true
+		assert.Nil(t, flow.SourceDataAddress)
+		return nil
+	}))
+	store.put(consumerFlow("flow", pullProfile, Prepared))
+
+	response, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m"})
+	require.NoError(t, err)
+	assert.Equal(t, Started, response.State)
+	assert.True(t, invoked)
+
+	flow := store.get(t, "flow")
+	assert.Equal(t, Started, flow.State)
+	assert.Nil(t, flow.SourceDataAddress)
+}
+
+func Test_Started_PushWithDataAddress(t *testing.T) {
+	sdk, store := newTestSDK(t)
+	store.put(consumerFlow("flow", pushProfile, Prepared))
+	_, err := sdk.Started(context.Background(), "flow", DataFlowStartedNotificationMessage{MessageID: "m", DataAddress: newDataAddress()})
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Equal(t, Prepared, store.get(t, "flow").State)
 }
 
 func Test_Started_Duplicate(t *testing.T) {

@@ -39,6 +39,23 @@ jobs:
           go generate ./...
           go test ./pkg/... ./internal/... --tags=postgres
 
+  tck:
+    name: Data Plane Signaling TCK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run TCK
+        run: go test ./internal/tests/tck/... --tags=tck -v
+
   verify-examples:
     name: Run example ${{ matrix.example }}
     runs-on: ubuntu-latest

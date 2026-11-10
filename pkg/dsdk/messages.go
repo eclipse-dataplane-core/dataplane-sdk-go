@@ -42,7 +42,8 @@ func (d *DataFlowStartMessage) Validate() error {
 }
 
 // DataFlowStartedNotificationMessage notifies the consumer data plane that a transfer has started. For consumer-pull
-// transfers it carries the DataAddress to obtain the data from; it must be omitted for provider-push transfers.
+// transfers it carries the DataAddress to obtain the data from, which the specification makes optional; it must be
+// omitted for provider-push transfers.
 type DataFlowStartedNotificationMessage struct {
 	MessageID   string       `json:"messageId" validate:"required"`
 	DataAddress *DataAddress `json:"dataAddress,omitempty"`

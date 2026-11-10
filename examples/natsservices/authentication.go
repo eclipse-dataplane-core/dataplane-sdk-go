@@ -39,9 +39,9 @@ func NewAuthService() *AuthService {
 	return &AuthService{tokenStore: common.NewStore[storeEntry](), accountKeys: accountKeys}
 }
 
-func (as *AuthService) InvalidateToken(processID string) error {
+func (as *AuthService) InvalidateToken(dataFlowID string) error {
 	// Remove from token store
-	found := as.tokenStore.Delete(processID)
+	found := as.tokenStore.Delete(dataFlowID)
 	if !found {
 		return fmt.Errorf("token not found")
 	}
@@ -63,7 +63,7 @@ func (as *AuthService) Init() error {
 
 		// put the user in the global account
 		uc.Audience = "$G"
-		uc.Name = userClaims.Name // sets to processID
+		uc.Name = userClaims.Name // sets to dataFlowID
 		uc.Permissions.Pub.Allow.Add(userClaims.Permissions.Pub.Allow...)
 		uc.Permissions.Sub.Allow.Add(userClaims.Permissions.Sub.Allow...)
 
@@ -95,24 +95,24 @@ func (as *AuthService) Init() error {
 	return nil
 }
 
-func (ns *AuthService) CreateToken(processID string, pull bool) (string, error) {
+func (ns *AuthService) CreateToken(dataFlowID string, pull bool) (string, error) {
 	userKeys, _ := nkeys.CreateUser()
 	userPKey, _ := userKeys.PublicKey()
 
 	userClaims := jwt.NewUserClaims(userPKey)
-	userClaims.Name = processID
+	userClaims.Name = dataFlowID
 
 	// Restrict permissions
 	if pull {
-		userClaims.Permissions.Sub.Allow.Add(processID + "." + ForwardSuffix)
-		userClaims.Permissions.Sub.Allow.Add(processID + "." + ReplySuffix)
+		userClaims.Permissions.Sub.Allow.Add(dataFlowID + "." + ForwardSuffix)
+		userClaims.Permissions.Sub.Allow.Add(dataFlowID + "." + ReplySuffix)
 	} else {
-		userClaims.Permissions.Pub.Allow.Add(processID + "." + ForwardSuffix)
-		userClaims.Permissions.Pub.Allow.Add(processID + "." + ReplySuffix)
+		userClaims.Permissions.Pub.Allow.Add(dataFlowID + "." + ForwardSuffix)
+		userClaims.Permissions.Pub.Allow.Add(dataFlowID + "." + ReplySuffix)
 	}
 
 	userJWT, _ := userClaims.Encode(ns.accountKeys)
-	ns.tokenStore.Create(processID, storeEntry{processID, userJWT})
+	ns.tokenStore.Create(dataFlowID, storeEntry{dataFlowID, userJWT})
 	return userJWT, nil
 }
 
@@ -123,6 +123,6 @@ func (ac *AuthService) shutdown() {
 }
 
 type storeEntry struct {
-	processID string
-	token     string
+	dataFlowID string
+	token      string
 }

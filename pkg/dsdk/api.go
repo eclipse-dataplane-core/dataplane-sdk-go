@@ -34,6 +34,8 @@ type DataPlaneApi struct {
 	basePath string
 }
 
+// NewDataPlaneApi returns the handlers for mounting them on a custom router. Prefer NewHandler, which also
+// authenticates requests.
 func NewDataPlaneApi(sdk *DataPlaneSDK) *DataPlaneApi {
 	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath}
 }

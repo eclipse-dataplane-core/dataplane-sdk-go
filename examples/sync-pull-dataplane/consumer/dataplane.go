@@ -52,6 +52,7 @@ func NewDataPlane() (*ConsumerDataPlane, error) {
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
+		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(dataplane.prepareProcessor),
 		dsdk.WithStartProcessor(dataplane.startProcessor),
 	)
@@ -62,10 +63,13 @@ func NewDataPlane() (*ConsumerDataPlane, error) {
 	return dataplane, nil
 }
 
+// SDK returns the data plane's SDK instance.
+func (d *ConsumerDataPlane) SDK() *dsdk.DataPlaneSDK {
+	return d.sdk
+}
+
 func (d *ConsumerDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.sdk, common.ConsumerSignalingPort)
-	// Start signaling server
-	common.StartServer(d.signalingServer, "[Consumer Data Plane] Signaling server")
+	d.signalingServer = common.StartSignalingServer(d.sdk, common.ConsumerSignalingPort, "[Consumer Data Plane] Signaling server")
 
 	d.dataServer = common.NewDataServer(common.ConsumerDataPort, "/tokens/", d.getEndpointToken)
 	common.StartServer(d.dataServer, "[Consumer Data Plane] Data server")

@@ -43,6 +43,7 @@ func NewDataPlane(authService *natsservices.AuthService,
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
+		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(providerDataPlane.prepareProcessor),
 		dsdk.WithStartProcessor(providerDataPlane.startProcessor),
 		dsdk.WithSuspendProcessor(providerDataPlane.suspendProcessor),
@@ -57,11 +58,13 @@ func NewDataPlane(authService *natsservices.AuthService,
 	return providerDataPlane, nil
 }
 
-func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
+// SDK returns the data plane's SDK instance.
+func (d *ProviderDataPlane) SDK() *dsdk.DataPlaneSDK {
+	return d.sdk
+}
 
-	// Start signaling server
-	common.StartServer(d.signalingServer, "[Provider Data Plane] Signaling server")
+func (d *ProviderDataPlane) Init() {
+	d.signalingServer = common.StartSignalingServer(d.sdk, common.ProviderSignalingPort, "[Provider Data Plane] Signaling server")
 }
 
 func (d *ProviderDataPlane) Shutdown(ctx context.Context) {
@@ -138,5 +141,5 @@ func (d *ProviderDataPlane) invalidate(flow *dsdk.DataFlow) error {
 }
 
 type ConnectionInvalidator interface {
-	InvalidateConnection(processID string)
+	InvalidateConnection(dataFlowID string)
 }

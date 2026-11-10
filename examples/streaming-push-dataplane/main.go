@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	launcher.LaunchServices()
+	provider, consumer := launcher.LaunchServices()
 
-	streaming.TerminateScenario(natsservices.PushProfile)
+	streaming.TerminateScenario(natsservices.PushProfile, provider.SDK(), consumer.SDK())
 }

@@ -78,14 +78,14 @@ func (ns *NATSServer) Shutdown() {
 	ns.server.Shutdown()
 }
 
-func (ns *NATSServer) InvalidateConnection(processID string) {
+func (ns *NATSServer) InvalidateConnection(dataFlowID string) {
 	conns, err := ns.server.Connz(&server.ConnzOptions{Username: true})
 	if err != nil {
 		return
 	}
 	var id uint64
 	for _, conn := range conns.Conns {
-		if conn.AuthorizedUser == processID {
+		if conn.AuthorizedUser == dataFlowID {
 			id = conn.Cid
 			break
 		}

@@ -51,10 +51,12 @@ func NewDataPlane() (*ProviderDataPlane, error) {
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
 		dsdk.WithAuthorization(common.DemoAuthorization{}),
+		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
 		dsdk.WithPrepareProcessor(providerDataPlane.prepareProcessor),
 		dsdk.WithStartProcessor(providerDataPlane.startProcessor),
 		dsdk.WithSuspendProcessor(providerDataPlane.suspendProcessor),
 		dsdk.WithTerminateProcessor(providerDataPlane.terminateProcessor),
+		dsdk.WithCompleteProcessor(providerDataPlane.terminateProcessor), // a completed transfer invalidates the token too
 	)
 	if err != nil {
 		return nil, err
@@ -65,12 +67,14 @@ func NewDataPlane() (*ProviderDataPlane, error) {
 	return providerDataPlane, nil
 }
 
-func (d *ProviderDataPlane) Init() {
-	d.signalingServer = common.NewSignalingServer(d.sdk, common.ProviderSignalingPort)
-	d.dataServer = common.NewDataServer(common.ProviderDataPort, "/datasets/", d.transferDataset)
+// SDK returns the data plane's SDK instance.
+func (d *ProviderDataPlane) SDK() *dsdk.DataPlaneSDK {
+	return d.sdk
+}
 
-	// Start signaling server
-	common.StartServer(d.signalingServer, "[Provider Data Plane] Signaling server")
+func (d *ProviderDataPlane) Init() {
+	d.signalingServer = common.StartSignalingServer(d.sdk, common.ProviderSignalingPort, "[Provider Data Plane] Signaling server")
+	d.dataServer = common.NewDataServer(common.ProviderDataPort, "/datasets/", d.transferDataset)
 
 	// Start data server
 	common.StartServer(d.dataServer, "[Provider Data Plane] Data server")
@@ -108,7 +112,7 @@ func (d *ProviderDataPlane) startProcessor(ctx context.Context, flow *dsdk.DataF
 		datsetId: flow.DatasetID,
 		binding:  flow.CounterPartyID,
 	}
-	d.tokenStore.Create(flow.DatasetID, tokenEntry) // token is pinned to the flow ID which is the transfer process id on the control plane
+	d.tokenStore.Create(flow.DatasetID, tokenEntry) // the token is bound to the dataset of the data flow
 
 	da, err := dsdk.NewDataAddressBuilder().
 		EndpointType(httpEndpointType).

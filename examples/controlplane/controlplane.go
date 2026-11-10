@@ -141,6 +141,7 @@ func (c *ControlPlaneSimulator) post(ctx context.Context, url string, message an
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set(contentType, jsonContentType)
+	req.Header.Set("Authorization", common.DemoHeader(common.SampleControlPlaneID))
 
 	resp, err := c.client.Do(req)
 	if err != nil {

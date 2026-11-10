@@ -103,6 +103,7 @@ func Test_Prepare_InvalidPayload(t *testing.T) {
 func Test_Prepare_MalformedJSON(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "/v1/dataflows/prepare", strings.NewReader("{"))
 	require.NoError(t, err)
+	req.Header.Set("Authorization", testAuthorization)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -448,6 +449,7 @@ func Test_Router_CustomBasePath(t *testing.T) {
 	require.NoError(t, err)
 	req, err := http.NewRequest(http.MethodPost, "/api/signaling/dataflows/start", bytes.NewBuffer(payload))
 	require.NoError(t, err)
+	req.Header.Set("Authorization", testAuthorization)
 	rr := httptest.NewRecorder()
 	custom.ServeHTTP(rr, req)
 
@@ -456,9 +458,42 @@ func Test_Router_CustomBasePath(t *testing.T) {
 
 	req, err = http.NewRequest(http.MethodGet, "/v1/dataflows/"+msg.DataFlowID+"/status", nil)
 	require.NoError(t, err)
+	req.Header.Set("Authorization", testAuthorization)
 	rr = httptest.NewRecorder()
 	custom.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+// --- authorization ---
+
+func Test_Authorization_Required(t *testing.T) {
+	msg := newStartMessage(pullProfile, nil)
+	payload, err := json.Marshal(msg)
+	require.NoError(t, err)
+	for _, header := range []string{"", "Bearer nope"} {
+		req, err := http.NewRequest(http.MethodPost, "/v1/dataflows/start", bytes.NewBuffer(payload))
+		require.NoError(t, err)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	}
+	assertNoFlow(t, msg.DataFlowID)
+}
+
+func Test_Authorization_RecordsAndChecksCaller(t *testing.T) {
+	msg := newStartMessage(pullProfile, nil)
+	require.Equal(t, http.StatusOK, post(t, "/v1/dataflows/start", msg).Code)
+	assert.Equal(t, "tests-control-plane", findFlow(t, msg.DataFlowID).ControlPlaneID)
+
+	req, err := http.NewRequest(http.MethodGet, "/v1/dataflows/"+msg.DataFlowID+"/status", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Test another-control-plane")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
 }
 
 // --- helpers ---
@@ -474,6 +509,7 @@ func postRaw(t *testing.T, path string, body string) *httptest.ResponseRecorder 
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	require.NoError(t, err)
+	req.Header.Set("Authorization", testAuthorization)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
@@ -483,6 +519,7 @@ func get(t *testing.T, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, path, nil)
 	require.NoError(t, err)
+	req.Header.Set("Authorization", testAuthorization)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
@@ -569,8 +606,29 @@ func isAsync(flow *dsdk.DataFlow) bool {
 	return async
 }
 
+// testAuthorization is the Authorization header the tests authenticate with; see headerAuthorization.
+const testAuthorization = "Test tests-control-plane"
+
+// headerAuthorization accepts "Test <id>" headers. It is a stand-in for a real authorization profile.
+type headerAuthorization struct{}
+
+func (headerAuthorization) Type() string { return "test" }
+
+func (headerAuthorization) AuthorizationHeader(context.Context, dsdk.AuthorizationEntry) (string, error) {
+	return "Test tests-data-plane", nil
+}
+
+func (headerAuthorization) ExtractCallerID(_ context.Context, header string) (string, error) {
+	id, ok := strings.CutPrefix(header, "Test ")
+	if !ok || id == "" {
+		return "", dsdk.ErrUnauthorized
+	}
+	return id, nil
+}
+
 func newSdk(db *sql.DB) (*dsdk.DataPlaneSDK, error) {
 	return dsdk.NewDataPlaneSDK(
+		dsdk.WithAuthorization(headerAuthorization{}),
 		dsdk.WithStore(postgres.NewStore(db)),
 		dsdk.WithTransactionContext(postgres.NewDBTransactionContext(db)),
 		dsdk.WithPrepareProcessor(func(_ context.Context, flow *dsdk.DataFlow, _ *dsdk.DataPlaneSDK, _ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {

@@ -27,11 +27,12 @@ type fakeControlPlane struct {
 }
 
 type recordedRequest struct {
-	method      string
-	path        string
-	rawPath     string
-	contentType string
-	body        []byte
+	method        string
+	path          string
+	rawPath       string
+	contentType   string
+	authorization string
+	body          []byte
 }
 
 func newFakeControlPlane(t *testing.T, codes ...int) *fakeControlPlane {
@@ -44,11 +45,12 @@ func newFakeControlPlane(t *testing.T, codes ...int) *fakeControlPlane {
 		body, _ := io.ReadAll(r.Body)
 		cp.mu.Lock()
 		cp.requests = append(cp.requests, recordedRequest{
-			method:      r.Method,
-			path:        r.URL.Path,
-			rawPath:     r.URL.EscapedPath(),
-			contentType: r.Header.Get(contentType),
-			body:        body,
+			method:        r.Method,
+			path:          r.URL.Path,
+			rawPath:       r.URL.EscapedPath(),
+			contentType:   r.Header.Get(contentType),
+			authorization: r.Header.Get("Authorization"),
+			body:          body,
 		})
 		code := cp.codes[min(len(cp.requests), len(cp.codes))-1]
 		cp.mu.Unlock()
@@ -82,7 +84,7 @@ func newNotifySDK(t *testing.T, cp *fakeControlPlane, options ...DataPlaneSDKOpt
 	t.Helper()
 	base := []DataPlaneSDKOption{WithControlPlaneClient(newTestClient(DefaultRetryPolicy))}
 	if cp != nil {
-		base = append(base, WithControlPlane(cp.URL+"/api/control"))
+		base = append(base, WithControlPlane(ControlPlane{ID: testCaller, Endpoint: cp.URL + "/api/control", Authorization: testEntry()}))
 	}
 	return newTestSDK(t, append(base, options...)...)
 }
@@ -369,21 +371,26 @@ func Test_Notify_UnknownFlow(t *testing.T) {
 }
 
 func Test_Notify_NoControlPlane(t *testing.T) {
-	for name, option := range map[string]DataPlaneSDKOption{
-		"not configured": nil,
-		"empty url":      WithControlPlane(""),
-	} {
-		t.Run(name, func(t *testing.T) {
-			var options []DataPlaneSDKOption
-			if option != nil {
-				options = append(options, option)
-			}
-			sdk, store := newNotifySDK(t, nil, options...)
-			store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Started})
-			assert.ErrorIs(t, sdk.NotifyCompleted(context.Background(), "flow"), ErrControlPlaneNotRegistered)
-			assert.Equal(t, Started, store.get(t, "flow").State)
-		})
+	sdk, store := newNotifySDK(t, nil)
+	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Started})
+	assert.ErrorIs(t, sdk.NotifyCompleted(context.Background(), "flow"), ErrControlPlaneNotRegistered)
+	assert.Equal(t, Started, store.get(t, "flow").State)
+}
+
+func Test_WithControlPlane_ValidatesEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"", "/relative", "ftp://cp.example.com", "http://cp.example.com"} {
+		_, err := NewDataPlaneSDK(WithStore(&fakeStore{}), WithTransactionContext(&mockTrxContext{}),
+			WithControlPlane(ControlPlane{Endpoint: endpoint, Authorization: testEntry()}))
+		assert.ErrorIs(t, err, ErrValidation, endpoint)
 	}
+	for _, endpoint := range []string{"https://cp.example.com", "http://localhost:8080", "http://127.0.0.1:9", "http://[::1]:9"} {
+		_, err := NewDataPlaneSDK(WithStore(&fakeStore{}), WithTransactionContext(&mockTrxContext{}),
+			WithControlPlane(ControlPlane{Endpoint: endpoint, Authorization: testEntry()}))
+		assert.NoError(t, err, endpoint)
+	}
+	_, err := NewDataPlaneSDK(WithStore(&fakeStore{}), WithTransactionContext(&mockTrxContext{}), WithInsecureEndpoints(),
+		WithControlPlane(ControlPlane{Endpoint: "http://cp.example.com", Authorization: testEntry()}))
+	assert.NoError(t, err)
 }
 
 type recordingResolver struct {
@@ -391,9 +398,9 @@ type recordingResolver struct {
 	url string
 }
 
-func (r *recordingResolver) ControlPlaneURL(_ context.Context, id string) (string, error) {
+func (r *recordingResolver) ControlPlane(_ context.Context, id string) (*ControlPlane, error) {
 	r.ids = append(r.ids, id)
-	return r.url, nil
+	return &ControlPlane{ID: id, Endpoint: r.url, Authorization: testEntry()}, nil
 }
 
 func Test_Notify_UsesResolver(t *testing.T) {
@@ -482,7 +489,7 @@ func Test_HTTPClient_Retries(t *testing.T) {
 				return nil
 			}
 
-			err := client.Notify(context.Background(), cp.URL, ActionStarted, DataFlowStatusMessage{MessageID: "m", DataFlowID: "flow", State: Started})
+			err := client.Notify(context.Background(), ControlPlane{Endpoint: cp.URL}, ActionStarted, DataFlowStatusMessage{MessageID: "m", DataFlowID: "flow", State: Started})
 			if tc.wantErr {
 				var cpErr *ControlPlaneError
 				require.ErrorAs(t, err, &cpErr)
@@ -507,7 +514,7 @@ func Test_HTTPClient_RetriesTransportErrors(t *testing.T) {
 	})}))
 	client.sleep = noSleep
 
-	err := client.Notify(context.Background(), "http://cp.example", ActionStarted, DataFlowStatusMessage{DataFlowID: "flow"})
+	err := client.Notify(context.Background(), ControlPlane{Endpoint: "http://cp.example"}, ActionStarted, DataFlowStatusMessage{DataFlowID: "flow"})
 	assert.ErrorContains(t, err, "connection refused")
 	assert.Equal(t, DefaultRetryPolicy.Attempts, calls)
 }
@@ -525,7 +532,7 @@ func Test_HTTPClient_ContextCancellationStopsRetries(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := client.Notify(ctx, cp.URL, ActionStarted, DataFlowStatusMessage{DataFlowID: "flow"})
+	err := client.Notify(ctx, ControlPlane{Endpoint: cp.URL}, ActionStarted, DataFlowStatusMessage{DataFlowID: "flow"})
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Less(t, time.Since(start), 10*time.Second)
 	assert.Len(t, cp.received(), 1)
@@ -543,7 +550,7 @@ func Test_HTTPClient_UsesCustomClient(t *testing.T) {
 	})}
 
 	client := NewHTTPControlPlaneClient(WithHTTPClient(httpClient))
-	require.NoError(t, client.Notify(context.Background(), cp.URL, ActionCompleted, DataFlowStatusMessage{DataFlowID: "flow"}))
+	require.NoError(t, client.Notify(context.Background(), ControlPlane{Endpoint: cp.URL}, ActionCompleted, DataFlowStatusMessage{DataFlowID: "flow"}))
 	assert.Equal(t, "Bearer token", authorization)
 }
 
@@ -551,14 +558,14 @@ func Test_HTTPClient_Agreement(t *testing.T) {
 	cp := newFakeControlPlane(t)
 	client := newTestClient(DefaultRetryPolicy)
 
-	agreement, err := client.GetAgreement(context.Background(), cp.URL+"/api/", "flow-1")
+	agreement, err := client.GetAgreement(context.Background(), ControlPlane{Endpoint: cp.URL + "/api/"}, "flow-1")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"@id": "agreement-1"}`, string(agreement))
 	assert.Equal(t, http.MethodGet, cp.received()[0].method)
 	assert.Equal(t, "/api/transfers/flow-1/agreement", cp.received()[0].path)
 
 	failing := newFakeControlPlane(t, http.StatusNotFound)
-	_, err = client.GetAgreement(context.Background(), failing.URL, "flow-1")
+	_, err = client.GetAgreement(context.Background(), ControlPlane{Endpoint: failing.URL}, "flow-1")
 	var cpErr *ControlPlaneError
 	require.ErrorAs(t, err, &cpErr)
 	assert.Equal(t, ActionAgreement, cpErr.Action)
@@ -568,7 +575,7 @@ func Test_HTTPClient_Agreement(t *testing.T) {
 func Test_HTTPClient_EscapesFlowIDOnTheWire(t *testing.T) {
 	cp := newFakeControlPlane(t)
 	client := newTestClient(DefaultRetryPolicy)
-	require.NoError(t, client.Notify(context.Background(), cp.URL+"/api", ActionStarted, DataFlowStatusMessage{DataFlowID: "../../admin?x=1#f"}))
+	require.NoError(t, client.Notify(context.Background(), ControlPlane{Endpoint: cp.URL + "/api"}, ActionStarted, DataFlowStatusMessage{DataFlowID: "../../admin?x=1#f"}))
 	request := cp.received()[0]
 	assert.Equal(t, "/api/transfers/..%2F..%2Fadmin%3Fx=1%23f/dataflow/started", request.rawPath)
 	assert.Equal(t, "/api/transfers/../../admin?x=1#f/dataflow/started", request.path)

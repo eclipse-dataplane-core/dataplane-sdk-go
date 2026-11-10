@@ -611,7 +611,8 @@ func Test_DataPlaneSDK_Completed_EmptyID(t *testing.T) {
 func newTestSDK(t *testing.T, options ...DataPlaneSDKOption) (*DataPlaneSDK, *fakeStore) {
 	t.Helper()
 	store := &fakeStore{flows: map[string]*DataFlow{}}
-	sdk, err := NewDataPlaneSDK(append([]DataPlaneSDKOption{WithStore(store), WithTransactionContext(&mockTrxContext{})}, options...)...)
+	base := []DataPlaneSDKOption{WithStore(store), WithTransactionContext(&mockTrxContext{}), WithAuthorization(testAuthorization{})}
+	sdk, err := NewDataPlaneSDK(append(base, options...)...)
 	require.NoError(t, err)
 	return sdk, store
 }

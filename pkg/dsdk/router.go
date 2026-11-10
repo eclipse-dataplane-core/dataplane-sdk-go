@@ -1,7 +1,6 @@
 package dsdk
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,43 +11,47 @@ const DefaultBasePath = "/v1"
 
 type handlerConfig struct {
 	basePath      string
-	identifier    ControlPlaneIdentifier
-	hasIdentifier bool
+	authenticator Authenticator
 }
 
-// ControlPlaneIdentifier returns the id of the control plane that sent a request. Prepare and start record it on the
-// new data flow, so that callbacks reach that control plane. An error is answered with 401.
-type ControlPlaneIdentifier func(r *http.Request) (string, error)
+// Authenticator returns the id of the control plane that sent a request, or an error, which is answered with 401.
+// Prepare and start record the id on the new data flow, so that callbacks reach that control plane; the other
+// endpoints answer 403 if the data flow or registration belongs to a different control plane. An empty id disables
+// these checks for the request.
+type Authenticator func(r *http.Request) (string, error)
 
-// WithControlPlaneIdentifier sets how NewHandler identifies the calling control plane. The default is
-// DefaultControlPlaneIdentifier.
-func WithControlPlaneIdentifier(identifier ControlPlaneIdentifier) HandlerOption {
+// WithAuthenticator replaces how NewHandler authenticates requests. By default the Authorization header is required
+// and passed to DataPlaneSDK.ExtractControlPlaneID; with WithAuthorizationDisabled no authentication takes place
+// unless an authenticator is set with this option.
+func WithAuthenticator(authenticator Authenticator) HandlerOption {
 	return func(c *handlerConfig) {
-		c.identifier = identifier
-		c.hasIdentifier = true
+		c.authenticator = authenticator
 	}
 }
 
-// DefaultControlPlaneIdentifier returns an identifier that, if the SDK has a ControlPlaneStore holding exactly one
-// registered control plane, returns that control plane's id, and "" otherwise. It fails only if the store fails.
-func DefaultControlPlaneIdentifier(sdk *DataPlaneSDK) ControlPlaneIdentifier {
+// authorizationHeaderAuthenticator authenticates requests with the SDK's registered Authorizations.
+func authorizationHeaderAuthenticator(sdk *DataPlaneSDK) Authenticator {
 	return func(r *http.Request) (string, error) {
-		if sdk.controlPlaneStore == nil {
-			return "", nil
+		header := r.Header.Get("Authorization")
+		if header == "" {
+			return "", fmt.Errorf("%w: missing Authorization header", ErrUnauthorized)
 		}
-		var controlPlanes []*ControlPlane
-		err := sdk.execute(r.Context(), func(ctx context.Context) error {
-			var err error
-			controlPlanes, err = sdk.controlPlaneStore.FindAll(ctx)
-			return err
-		})
+		return sdk.ExtractControlPlaneID(r.Context(), header)
+	}
+}
+
+// authenticate runs the authenticator before the handler and puts the caller id into the request context.
+func (d *DataPlaneApi) authenticate(authenticator Authenticator, next http.HandlerFunc) http.HandlerFunc {
+	if authenticator == nil {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := authenticator(r)
 		if err != nil {
-			return "", fmt.Errorf("listing control planes: %w", err)
+			d.writeResponse(w, http.StatusUnauthorized, &ErrorResponse{Error: fmt.Sprintf("unauthorized: %s", err)})
+			return
 		}
-		if len(controlPlanes) == 1 {
-			return controlPlanes[0].ID, nil
-		}
-		return "", nil
+		next(w, r.WithContext(ContextWithControlPlaneID(r.Context(), id)))
 	}
 }
 
@@ -81,30 +84,34 @@ func WithBasePath(basePath string) HandlerOption {
 //	PUT    <base>/controlplanes
 //	DELETE <base>/controlplanes/{controlPlaneId}
 //
-// Prepare and start record the id of the calling control plane on new data flows; see WithControlPlaneIdentifier.
+// Every request is authenticated before its body is read: unless WithAuthorizationDisabled is set, a request without
+// a valid Authorization header is answered with 401. See WithAuthenticator.
 func NewHandler(sdk *DataPlaneSDK, options ...HandlerOption) http.Handler {
 	config := handlerConfig{basePath: DefaultBasePath}
+	if !sdk.authorizationDisabled {
+		config.authenticator = authorizationHeaderAuthenticator(sdk)
+	}
 	for _, opt := range options {
 		opt(&config)
 	}
-	if !config.hasIdentifier {
-		config.identifier = DefaultControlPlaneIdentifier(sdk)
+	api := &DataPlaneApi{sdk: sdk, basePath: config.basePath}
+	handle := func(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pattern, api.authenticate(config.authenticator, handler))
 	}
-	api := &DataPlaneApi{sdk: sdk, basePath: config.basePath, identifier: config.identifier}
 	base := config.basePath + "/dataflows"
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+base+"/prepare", api.Prepare)
-	mux.HandleFunc("POST "+base+"/start", api.Start)
-	mux.HandleFunc("POST "+base+"/{id}/started", api.Started)
-	mux.HandleFunc("POST "+base+"/{id}/suspend", api.Suspend)
-	mux.HandleFunc("POST "+base+"/{id}/resume", api.Resume)
-	mux.HandleFunc("POST "+base+"/{id}/terminate", api.Terminate)
-	mux.HandleFunc("POST "+base+"/{id}/completed", api.Completed)
-	mux.HandleFunc("GET "+base+"/{id}/status", api.Status)
+	handle(mux, "POST "+base+"/prepare", api.Prepare)
+	handle(mux, "POST "+base+"/start", api.Start)
+	handle(mux, "POST "+base+"/{id}/started", api.Started)
+	handle(mux, "POST "+base+"/{id}/suspend", api.Suspend)
+	handle(mux, "POST "+base+"/{id}/resume", api.Resume)
+	handle(mux, "POST "+base+"/{id}/terminate", api.Terminate)
+	handle(mux, "POST "+base+"/{id}/completed", api.Completed)
+	handle(mux, "GET "+base+"/{id}/status", api.Status)
 	if sdk.controlPlaneStore != nil {
-		mux.HandleFunc("PUT "+config.basePath+"/controlplanes", api.RegisterControlPlane)
-		mux.HandleFunc("DELETE "+config.basePath+"/controlplanes/{controlPlaneId}", api.DeleteControlPlane)
+		handle(mux, "PUT "+config.basePath+"/controlplanes", api.RegisterControlPlane)
+		handle(mux, "DELETE "+config.basePath+"/controlplanes/{controlPlaneId}", api.DeleteControlPlane)
 	}
 	return mux
 }

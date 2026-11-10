@@ -42,6 +42,7 @@ func NewDataPlane(authService *natsservices.AuthService,
 	sdk, err := dsdk.NewDataPlaneSDK(
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
+		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithPrepareProcessor(providerDataPlane.prepareProcessor),
 		dsdk.WithStartProcessor(providerDataPlane.startProcessor),
 		dsdk.WithSuspendProcessor(providerDataPlane.suspendProcessor),

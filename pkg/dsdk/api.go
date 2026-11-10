@@ -13,7 +13,6 @@
 package dsdk
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,14 +26,16 @@ const jsonContentType = "application/json"
 
 // DataPlaneApi implements the data plane endpoints of the Data Plane Signaling API. Its handlers expect the data flow
 // id in the "id" path value; use NewHandler to mount them.
+//
+// The handlers do not authenticate requests: they take the caller id from the request context
+// (ContextWithControlPlaneID). NewHandler authenticates every request before calling them.
 type DataPlaneApi struct {
-	sdk        *DataPlaneSDK
-	basePath   string
-	identifier ControlPlaneIdentifier
+	sdk      *DataPlaneSDK
+	basePath string
 }
 
 func NewDataPlaneApi(sdk *DataPlaneSDK) *DataPlaneApi {
-	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath, identifier: DefaultControlPlaneIdentifier(sdk)}
+	return &DataPlaneApi{sdk: sdk, basePath: DefaultBasePath}
 }
 
 // Prepare handles POST /dataflows/prepare.
@@ -48,10 +49,7 @@ func (d *DataPlaneApi) Prepare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, ok := d.identify(w, r)
-	if !ok {
-		return
-	}
+	ctx := r.Context()
 	response, err := d.sdk.Prepare(ctx, message)
 	if err != nil {
 		d.handleError(err, w)
@@ -77,10 +75,7 @@ func (d *DataPlaneApi) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, ok := d.identify(w, r)
-	if !ok {
-		return
-	}
+	ctx := r.Context()
 	response, err := d.sdk.Start(ctx, message)
 	if err != nil {
 		d.handleError(err, w)
@@ -211,19 +206,6 @@ func (d *DataPlaneApi) DeleteControlPlane(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// identify returns the request context carrying the id of the calling control plane, or writes 401.
-func (d *DataPlaneApi) identify(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
-	if d.identifier == nil {
-		return r.Context(), true
-	}
-	id, err := d.identifier(r)
-	if err != nil {
-		d.writeResponse(w, http.StatusUnauthorized, &ErrorResponse{Error: fmt.Sprintf("unable to identify the control plane: %s", err)})
-		return nil, false
-	}
-	return ContextWithControlPlaneID(r.Context(), id), true
-}
-
 func (d *DataPlaneApi) statusPath(id string) string {
 	return d.basePath + "/dataflows/" + id + "/status"
 }
@@ -242,6 +224,12 @@ func (d *DataPlaneApi) decode(w http.ResponseWriter, r *http.Request, target any
 func (d *DataPlaneApi) handleError(err error, w http.ResponseWriter) {
 	switch {
 	case errors.Is(err, ErrValidation), errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrInvalidInput):
+		d.writeResponse(w, http.StatusBadRequest, &ErrorResponse{Error: err.Error()})
+	case errors.Is(err, ErrUnauthorized):
+		d.writeResponse(w, http.StatusUnauthorized, &ErrorResponse{Error: err.Error()})
+	case errors.Is(err, ErrForbidden):
+		d.writeResponse(w, http.StatusForbidden, &ErrorResponse{Error: err.Error()})
+	case errors.Is(err, ErrAuthorizationNotSupported):
 		d.writeResponse(w, http.StatusBadRequest, &ErrorResponse{Error: err.Error()})
 	case errors.Is(err, ErrNotFound):
 		d.writeResponse(w, http.StatusNotFound, &ErrorResponse{Error: err.Error()})

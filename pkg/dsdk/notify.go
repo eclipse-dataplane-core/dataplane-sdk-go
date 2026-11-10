@@ -152,7 +152,7 @@ func (dsdk *DataPlaneSDK) notify(ctx context.Context, id string, action string, 
 		if dsdk.controlPlanes == nil {
 			return fmt.Errorf("notifying %s for data flow %s: %w", action, id, ErrControlPlaneNotRegistered)
 		}
-		endpoint, err := dsdk.controlPlanes.ControlPlaneURL(ctx, flow.ControlPlaneID)
+		controlPlane, err := dsdk.controlPlanes.ControlPlane(ctx, flow.ControlPlaneID)
 		if err != nil {
 			return fmt.Errorf("notifying %s for data flow %s: %w", action, id, err)
 		}
@@ -166,7 +166,7 @@ func (dsdk *DataPlaneSDK) notify(ctx context.Context, id string, action string, 
 		message.State = flow.State
 
 		// a rejected or failed callback leaves the stored flow unchanged; *ControlPlaneError is reachable via errors.As
-		if err := dsdk.controlPlaneClient.Notify(ctx, endpoint, action, *message); err != nil {
+		if err := dsdk.controlPlaneClient.Notify(ctx, *controlPlane, action, *message); err != nil {
 			return fmt.Errorf("notifying %s for data flow %s: %w", action, id, err)
 		}
 		if err := dsdk.Store.Save(ctx, flow); err != nil {

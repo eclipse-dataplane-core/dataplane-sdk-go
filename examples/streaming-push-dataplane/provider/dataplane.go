@@ -36,6 +36,7 @@ func NewDataPlane(publisherService *EventPublisherService) (*ProviderDataPlane, 
 	sdk, err := dsdk.NewDataPlaneSDK(
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
+		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithPrepareProcessor(dataplane.prepareProcessor),
 		dsdk.WithStartProcessor(dataplane.startProcessor),
 		dsdk.WithSuspendProcessor(dataplane.suspendProcessor),

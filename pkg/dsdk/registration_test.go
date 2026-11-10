@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 
@@ -84,8 +82,9 @@ func newRegistrationMessage(id string) ControlPlaneRegistrationMessage {
 		ControlPlaneID: id,
 		Endpoint:       "https://cp.example.com/signaling",
 		Authorization: AuthorizationEntry{
-			Type: "oauth2_client_credentials",
+			Type: testAuthorizationType,
 			Properties: map[string]any{
+				"principal":     testPrincipal,
 				"tokenEndpoint": "https://auth.example.com/oauth2/token",
 				"clientId":      "123456789",
 				"clientSecret":  "s3cr3t",
@@ -99,7 +98,7 @@ func newDataPlaneRegistration() DataPlaneRegistrationMessage {
 		DataPlaneID:   "dataplane-1",
 		Endpoint:      "https://dp.example.com/v1",
 		Profiles:      []string{pullProfile, pushProfile},
-		Authorization: AuthorizationEntry{Type: "oauth2_client_credentials", Properties: map[string]any{"clientId": "dp"}},
+		Authorization: AuthorizationEntry{Type: testAuthorizationType, Properties: map[string]any{"clientId": "dp"}},
 		Labels:        []string{"gold"},
 	}
 }
@@ -110,7 +109,7 @@ func Test_AuthorizationEntry_JSON(t *testing.T) {
 	entry := newRegistrationMessage("cp").Authorization
 	data, err := json.Marshal(entry)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type": "oauth2_client_credentials", "tokenEndpoint": "https://auth.example.com/oauth2/token", "clientId": "123456789", "clientSecret": "s3cr3t"}`, string(data))
+	assert.JSONEq(t, `{"type": "test", "principal": "test-dp", "tokenEndpoint": "https://auth.example.com/oauth2/token", "clientId": "123456789", "clientSecret": "s3cr3t"}`, string(data))
 
 	var decoded AuthorizationEntry
 	require.NoError(t, json.Unmarshal(data, &decoded))
@@ -143,7 +142,7 @@ func Test_RegistrationMessages_JSON(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 	assert.Equal(t, "cp-1", raw["controlplaneId"])
-	assert.Equal(t, "oauth2_client_credentials", raw["authorization"].(map[string]any)["type"])
+	assert.Equal(t, testAuthorizationType, raw["authorization"].(map[string]any)["type"])
 
 	var decoded ControlPlaneRegistrationMessage
 	require.NoError(t, json.Unmarshal(data, &decoded))
@@ -225,15 +224,15 @@ func Test_RegisterAndDeleteControlPlane(t *testing.T) {
 	controlPlane, err := store.FindById(context.Background(), "cp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "https://cp.example.com/signaling", controlPlane.Endpoint)
-	assert.Equal(t, "oauth2_client_credentials", controlPlane.Authorization.Type)
+	assert.Equal(t, testAuthorizationType, controlPlane.Authorization.Type)
 
 	// replace semantics
 	update := newRegistrationMessage("cp-1")
 	update.Endpoint = "https://cp2.example.com"
-	update.Authorization = AuthorizationEntry{Type: "none"}
+	update.Authorization = AuthorizationEntry{Type: testAuthorizationType}
 	require.NoError(t, sdk.RegisterControlPlane(context.Background(), update))
 	controlPlane, _ = store.FindById(context.Background(), "cp-1")
-	assert.Equal(t, &ControlPlane{ID: "cp-1", Endpoint: "https://cp2.example.com", Authorization: AuthorizationEntry{Type: "none"}}, controlPlane)
+	assert.Equal(t, &ControlPlane{ID: "cp-1", Endpoint: "https://cp2.example.com", Authorization: AuthorizationEntry{Type: testAuthorizationType}}, controlPlane)
 
 	require.NoError(t, sdk.DeleteControlPlane(context.Background(), "cp-1"))
 	assert.ErrorIs(t, sdk.DeleteControlPlane(context.Background(), "cp-1"), ErrNotFound)
@@ -276,7 +275,7 @@ func Test_PrepareAndStart_RecordControlPlaneID(t *testing.T) {
 
 func Test_StoreResolver(t *testing.T) {
 	cp := newFakeControlPlane(t)
-	controlPlanes := newFakeControlPlaneStore(&ControlPlane{ID: "cp-1", Endpoint: cp.URL + "/registered", Authorization: AuthorizationEntry{Type: "none"}})
+	controlPlanes := newFakeControlPlaneStore(&ControlPlane{ID: "cp-1", Endpoint: cp.URL + "/registered", Authorization: testEntry()})
 	sdk, store := newNotifySDK(t, nil, WithControlPlaneStore(controlPlanes))
 
 	store.put(&DataFlow{ID: "known", Profile: pullProfile, State: Started, ControlPlaneID: "cp-1"})
@@ -300,7 +299,7 @@ func Test_StoreResolver(t *testing.T) {
 func Test_StaticControlPlaneTakesPrecedenceOverStore(t *testing.T) {
 	static := newFakeControlPlane(t)
 	registered := newFakeControlPlane(t)
-	controlPlanes := newFakeControlPlaneStore(&ControlPlane{ID: "cp-1", Endpoint: registered.URL, Authorization: AuthorizationEntry{Type: "none"}})
+	controlPlanes := newFakeControlPlaneStore(&ControlPlane{ID: "cp-1", Endpoint: registered.URL, Authorization: testEntry()})
 	// the static URL is given before the store; order does not matter
 	sdk, store := newNotifySDK(t, static, WithControlPlaneStore(controlPlanes))
 	store.put(&DataFlow{ID: "flow", Profile: pullProfile, State: Started, ControlPlaneID: "cp-1"})
@@ -317,7 +316,7 @@ func Test_Router_ControlPlaneRegistration(t *testing.T) {
 	sdk, _ := newTestSDK(t, WithControlPlaneStore(controlPlanes))
 	handler := NewHandler(sdk)
 
-	rr := serve(t, handler, http.MethodPut, "/v1/controlplanes", newRegistrationMessage("cp-1"))
+	rr := serveAs(t, handler, "Test cp-1", http.MethodPut, "/v1/controlplanes", newRegistrationMessage("cp-1"))
 	assert.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 	assert.Empty(t, rr.Body.String())
 	_, err := controlPlanes.FindById(context.Background(), "cp-1")
@@ -326,7 +325,7 @@ func Test_Router_ControlPlaneRegistration(t *testing.T) {
 	// update
 	update := newRegistrationMessage("cp-1")
 	update.Endpoint = "https://other.example.com"
-	assert.Equal(t, http.StatusOK, serve(t, handler, http.MethodPut, "/v1/controlplanes", update).Code)
+	assert.Equal(t, http.StatusOK, serveAs(t, handler, "Test cp-1", http.MethodPut, "/v1/controlplanes", update).Code)
 	controlPlane, _ := controlPlanes.FindById(context.Background(), "cp-1")
 	assert.Equal(t, "https://other.example.com", controlPlane.Endpoint)
 
@@ -336,7 +335,7 @@ func Test_Router_ControlPlaneRegistration(t *testing.T) {
 		"invalid endpoint":      `{"controlplaneId": "cp-2", "endpoint": "nope", "authorization": {"type": "x"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			rr := serve(t, handler, http.MethodPut, "/v1/controlplanes", body)
+			rr := serveAs(t, handler, "Test cp-1", http.MethodPut, "/v1/controlplanes", body)
 			assert.Equal(t, http.StatusBadRequest, rr.Code)
 			var errorResponse ErrorResponse
 			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errorResponse))
@@ -344,14 +343,14 @@ func Test_Router_ControlPlaneRegistration(t *testing.T) {
 		})
 	}
 
-	rr = serve(t, handler, http.MethodDelete, "/v1/controlplanes/cp-1", nil)
+	rr = serveAs(t, handler, "Test cp-1", http.MethodDelete, "/v1/controlplanes/cp-1", nil)
 	assert.Equal(t, http.StatusNoContent, rr.Code)
 	assert.Empty(t, rr.Body.String())
-	rr = serve(t, handler, http.MethodDelete, "/v1/controlplanes/cp-1", nil)
+	rr = serveAs(t, handler, "Test cp-1", http.MethodDelete, "/v1/controlplanes/cp-1", nil)
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 
-	assert.Equal(t, http.StatusMethodNotAllowed, serve(t, handler, http.MethodGet, "/v1/controlplanes", nil).Code)
-	assert.Equal(t, http.StatusMethodNotAllowed, serve(t, handler, http.MethodPost, "/v1/controlplanes", newRegistrationMessage("x")).Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, serveAs(t, handler, "Test cp-1", http.MethodGet, "/v1/controlplanes", nil).Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, serveAs(t, handler, "Test cp-1", http.MethodPost, "/v1/controlplanes", newRegistrationMessage("x")).Code)
 }
 
 func Test_Router_ControlPlaneRegistration_NotMountedWithoutStore(t *testing.T) {
@@ -364,69 +363,8 @@ func Test_Router_ControlPlaneRegistration_NotMountedWithoutStore(t *testing.T) {
 func Test_Router_ControlPlaneRegistration_BasePath(t *testing.T) {
 	sdk, _ := newTestSDK(t, WithControlPlaneStore(newFakeControlPlaneStore()))
 	handler := NewHandler(sdk, WithBasePath("/api/signaling"))
-	assert.Equal(t, http.StatusOK, serve(t, handler, http.MethodPut, "/api/signaling/controlplanes", newRegistrationMessage("cp-1")).Code)
-	assert.Equal(t, http.StatusNoContent, serve(t, handler, http.MethodDelete, "/api/signaling/controlplanes/cp-1", nil).Code)
-}
-
-func Test_Router_DefaultIdentifier(t *testing.T) {
-	controlPlanes := newFakeControlPlaneStore()
-	sdk, store := newTestSDK(t, WithControlPlaneStore(controlPlanes))
-	handler := NewHandler(sdk)
-
-	start := func() *DataFlow {
-		msg := createStartMessage(pullProfile, nil)
-		rr := serve(t, handler, http.MethodPost, "/v1/dataflows/start", msg)
-		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
-		return store.get(t, msg.DataFlowID)
-	}
-
-	assert.Empty(t, start().ControlPlaneID, "no control plane registered")
-
-	require.Equal(t, http.StatusOK, serve(t, handler, http.MethodPut, "/v1/controlplanes", newRegistrationMessage("cp-1")).Code)
-	assert.Equal(t, "cp-1", start().ControlPlaneID, "exactly one control plane registered")
-
-	prepare := createPrepareMessage(pullProfile)
-	require.Equal(t, http.StatusOK, serve(t, handler, http.MethodPost, "/v1/dataflows/prepare", prepare).Code)
-	assert.Equal(t, "cp-1", store.get(t, prepare.DataFlowID).ControlPlaneID)
-
-	require.Equal(t, http.StatusOK, serve(t, handler, http.MethodPut, "/v1/controlplanes", newRegistrationMessage("cp-2")).Code)
-	assert.Empty(t, start().ControlPlaneID, "ambiguous with two control planes")
-
-	controlPlanes.err = errors.New("db down")
-	rr := serve(t, handler, http.MethodPost, "/v1/dataflows/start", createStartMessage(pullProfile, nil))
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-}
-
-func Test_Router_CustomIdentifier(t *testing.T) {
-	sdk, store := newTestSDK(t)
-	handler := NewHandler(sdk, WithControlPlaneIdentifier(func(r *http.Request) (string, error) {
-		id := r.Header.Get("X-Control-Plane")
-		if id == "" {
-			return "", errors.New("missing header")
-		}
-		return id, nil
-	}))
-
-	msg := createStartMessage(pullProfile, nil)
-	rr := serve(t, handler, http.MethodPost, "/v1/dataflows/start", msg)
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-	var errorResponse ErrorResponse
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errorResponse))
-	assert.Contains(t, errorResponse.Error, "missing header")
-	assert.False(t, store.has(msg.DataFlowID))
-
-	data, err := json.Marshal(msg)
-	require.NoError(t, err)
-	req, err := http.NewRequest(http.MethodPost, "/v1/dataflows/start", strings.NewReader(string(data)))
-	require.NoError(t, err)
-	req.Header.Set("X-Control-Plane", "cp-7")
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Equal(t, "cp-7", store.get(t, msg.DataFlowID).ControlPlaneID)
-
-	// other endpoints are not identified
-	assert.Equal(t, http.StatusOK, serve(t, handler, http.MethodGet, "/v1/dataflows/"+msg.DataFlowID+"/status", nil).Code)
+	assert.Equal(t, http.StatusOK, serveAs(t, handler, "Test cp-1", http.MethodPut, "/api/signaling/controlplanes", newRegistrationMessage("cp-1")).Code)
+	assert.Equal(t, http.StatusNoContent, serveAs(t, handler, "Test cp-1", http.MethodDelete, "/api/signaling/controlplanes/cp-1", nil).Code)
 }
 
 // --- client ---
@@ -436,7 +374,7 @@ func Test_HTTPClient_RegisterDataPlane(t *testing.T) {
 	cp := newFakeControlPlane(t)
 	sdk, _ := newNotifySDK(t, nil)
 
-	require.NoError(t, sdk.RegisterDataPlane(context.Background(), cp.URL+"/api/", newDataPlaneRegistration()))
+	require.NoError(t, sdk.RegisterDataPlane(context.Background(), ControlPlane{Endpoint: cp.URL + "/api/", Authorization: testEntry()}, newDataPlaneRegistration()))
 	request := cp.received()[0]
 	assert.Equal(t, http.MethodPut, request.method)
 	assert.Equal(t, "/api/dataplanes", request.path)
@@ -447,7 +385,7 @@ func Test_HTTPClient_RegisterDataPlane(t *testing.T) {
 
 	invalid := newDataPlaneRegistration()
 	invalid.Profiles = nil
-	assert.ErrorIs(t, sdk.RegisterDataPlane(context.Background(), cp.URL, invalid), ErrValidation)
+	assert.ErrorIs(t, sdk.RegisterDataPlane(context.Background(), ControlPlane{Endpoint: cp.URL, Authorization: testEntry()}, invalid), ErrValidation)
 	assert.Len(t, cp.received(), 1, "an invalid registration is not sent")
 }
 
@@ -455,12 +393,12 @@ func Test_HTTPClient_DeregisterDataPlane(t *testing.T) {
 	cp := newFakeControlPlane(t, http.StatusNoContent)
 	sdk, _ := newNotifySDK(t, nil)
 
-	require.NoError(t, sdk.DeregisterDataPlane(context.Background(), cp.URL+"/api", "data plane/1?x"))
+	require.NoError(t, sdk.DeregisterDataPlane(context.Background(), ControlPlane{Endpoint: cp.URL + "/api", Authorization: testEntry()}, "data plane/1?x"))
 	request := cp.received()[0]
 	assert.Equal(t, http.MethodDelete, request.method)
 	assert.Equal(t, "/api/dataplanes/data%20plane%2F1%3Fx", request.rawPath)
 
-	assert.ErrorIs(t, sdk.DeregisterDataPlane(context.Background(), cp.URL, ""), ErrInvalidInput)
+	assert.ErrorIs(t, sdk.DeregisterDataPlane(context.Background(), ControlPlane{Endpoint: cp.URL, Authorization: testEntry()}, ""), ErrInvalidInput)
 }
 
 func Test_HTTPClient_RegistrationRetries(t *testing.T) {
@@ -480,10 +418,10 @@ func Test_HTTPClient_RegistrationRetries(t *testing.T) {
 				run    func(client *HTTPControlPlaneClient, url string) error
 			}{
 				{ActionRegisterDataPlane, func(client *HTTPControlPlaneClient, url string) error {
-					return client.RegisterDataPlane(context.Background(), url, newDataPlaneRegistration())
+					return client.RegisterDataPlane(context.Background(), ControlPlane{Endpoint: url}, newDataPlaneRegistration())
 				}},
 				{ActionDeregisterDataPlane, func(client *HTTPControlPlaneClient, url string) error {
-					return client.DeregisterDataPlane(context.Background(), url, "dataplane-1")
+					return client.DeregisterDataPlane(context.Background(), ControlPlane{Endpoint: url}, "dataplane-1")
 				}},
 			} {
 				cp := newFakeControlPlane(t, tc.codes...)

@@ -10,7 +10,8 @@
 //       Metaform Systems, Inc. - initial API and implementation
 //
 
-// Demonstrates registration and an asynchronous start on a provider data plane. The data plane registers itself with
+// Demonstrates registration, authorization and an asynchronous start on a provider data plane. Both sides
+// authenticate with the sample-only demo authorization of examples/common. The data plane registers itself with
 // the control plane (PUT /dataplanes) and the control plane registers itself with the data plane
 // (PUT /v1/controlplanes). The start processor then answers STARTING (HTTP 202), and once the transfer is ready the
 // data plane calls NotifyStarted, which sends the started callback with the pull DataAddress to the registered
@@ -27,6 +28,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eclipse-dataplane-core/dataplane-sdk-go/examples/common"
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/dsdk"
 	"github.com/eclipse-dataplane-core/dataplane-sdk-go/pkg/memory"
 	"github.com/google/uuid"
@@ -35,33 +37,43 @@ import (
 const (
 	pullProfile    = "https://w3id.org/dspace-sig/profile/http-pull"
 	dataPlaneID    = "async-start-dataplane"
-	controlPlaneID = "sample-control-plane"
+	controlPlaneID = common.SampleControlPlaneID
 )
 
 func main() {
 	// A minimal control plane that accepts data plane registrations and receives the data plane's callbacks.
 	callbacks := make(chan dsdk.DataFlowStatusMessage, 1)
 	controlPlaneMux := http.NewServeMux()
-	controlPlaneMux.HandleFunc("PUT /dataplanes", func(w http.ResponseWriter, r *http.Request) {
+	// the control plane only accepts requests that the data plane authorized as itself
+	authenticated := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != common.DemoHeader(dataPlaneID) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
+	controlPlaneMux.HandleFunc("PUT /dataplanes", authenticated(func(w http.ResponseWriter, r *http.Request) {
 		var registration dsdk.DataPlaneRegistrationMessage
 		if err := json.NewDecoder(r.Body).Decode(&registration); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		log.Printf("[Control Plane] Registered data plane %s at %s for %v", registration.DataPlaneID, registration.Endpoint, registration.Profiles)
-	})
-	controlPlaneMux.HandleFunc("DELETE /dataplanes/{id}", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	controlPlaneMux.HandleFunc("DELETE /dataplanes/{id}", authenticated(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[Control Plane] Deregistered data plane %s", r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
-	})
-	controlPlaneMux.HandleFunc("POST /transfers/{id}/dataflow/started", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	controlPlaneMux.HandleFunc("POST /transfers/{id}/dataflow/started", authenticated(func(w http.ResponseWriter, r *http.Request) {
 		var message dsdk.DataFlowStatusMessage
 		if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		callbacks <- message
-	})
+	}))
 	controlPlaneURL := serve(controlPlaneMux)
 
 	var sdk *dsdk.DataPlaneSDK
@@ -69,6 +81,7 @@ func main() {
 		dsdk.WithStore(memory.NewInMemoryStore()),
 		dsdk.WithTransactionContext(memory.InMemoryTrxContext{}),
 		dsdk.WithControlPlaneStore(memory.NewInMemoryControlPlaneStore()),
+		dsdk.WithAuthorization(common.DemoAuthorization{}),
 		dsdk.WithStartProcessor(func(_ context.Context, flow *dsdk.DataFlow, _ *dsdk.DataPlaneSDK, _ *dsdk.ProcessorOptions) (*dsdk.DataFlowStatusMessage, error) {
 			// Provisioning takes a while: answer STARTING now and notify the control plane when done.
 			go func() {
@@ -86,29 +99,30 @@ func main() {
 	dataPlaneURL := serve(dsdk.NewHandler(sdk))
 	ctx := context.Background()
 
-	// The data plane registers itself with the control plane.
-	authorization := dsdk.AuthorizationEntry{Type: "none"}
-	err = sdk.RegisterDataPlane(ctx, controlPlaneURL, dsdk.DataPlaneRegistrationMessage{
+	// The data plane registers itself with the control plane, authenticating as dataPlaneID, and tells the control
+	// plane to authenticate as controlPlaneID when it calls the data plane.
+	controlPlane := dsdk.ControlPlane{ID: controlPlaneID, Endpoint: controlPlaneURL, Authorization: common.DemoEntry(dataPlaneID)}
+	err = sdk.RegisterDataPlane(ctx, controlPlane, dsdk.DataPlaneRegistrationMessage{
 		DataPlaneID:   dataPlaneID,
 		Endpoint:      dataPlaneURL + dsdk.DefaultBasePath,
 		Profiles:      []string{pullProfile},
-		Authorization: authorization,
+		Authorization: common.DemoEntry(controlPlaneID),
 	})
 	if err != nil {
 		log.Fatalf("Unable to register the data plane: %v", err)
 	}
 	defer func() {
-		if err := sdk.DeregisterDataPlane(ctx, controlPlaneURL, dataPlaneID); err != nil {
+		if err := sdk.DeregisterDataPlane(ctx, controlPlane, dataPlaneID); err != nil {
 			log.Printf("Unable to deregister the data plane: %v", err)
 		}
 	}()
 
-	// The control plane registers itself with the data plane. As it is the only registered control plane, the data
-	// plane records it on new data flows and sends their callbacks to it.
+	// The control plane registers itself with the data plane, telling it to authenticate as dataPlaneID on callbacks.
+	// The data plane records the authenticated control plane on new data flows and sends their callbacks to it.
 	put(dataPlaneURL+dsdk.DefaultBasePath+"/controlplanes", dsdk.ControlPlaneRegistrationMessage{
 		ControlPlaneID: controlPlaneID,
 		Endpoint:       controlPlaneURL,
-		Authorization:  authorization,
+		Authorization:  common.DemoEntry(dataPlaneID),
 	})
 
 	// The control plane starts the transfer.
@@ -125,7 +139,13 @@ func main() {
 		Claims:           map[string]any{},
 	}}
 	body, _ := json.Marshal(start)
-	resp, err := http.Post(dataPlaneURL+dsdk.DefaultBasePath+"/dataflows/start", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, dataPlaneURL+dsdk.DefaultBasePath+"/dataflows/start", bytes.NewReader(body))
+	if err != nil {
+		log.Fatalf("Unable to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", common.DemoHeader(controlPlaneID))
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("Start request failed: %v", err)
 	}
@@ -180,6 +200,7 @@ func put(url string, message any) {
 		log.Fatalf("Unable to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", common.DemoHeader(controlPlaneID))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("PUT %s failed: %v", url, err)

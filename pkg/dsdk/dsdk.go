@@ -172,10 +172,12 @@ func (dsdk *DataPlaneSDK) Start(ctx context.Context, message DataFlowStartMessag
 	return response, nil
 }
 
-// Started is called on the consumer when the provider has started the transfer. For pull transfers the message must
-// carry the DataAddress to obtain the data from; for push transfers it must not carry one. It records the received
-// DataAddress on the flow (SourceDataAddress), invokes the started handler (WithStartedProcessor), transitions the
-// flow to STARTED and persists it. A duplicate message for a STARTED flow is acknowledged without invoking the handler.
+// Started is called on the consumer when the provider has started the transfer. For pull transfers the message
+// carries the DataAddress to obtain the data from; the specification makes it optional, so the SDK accepts a message
+// without one and leaves it to the started handler to reject it. For push transfers the message must not carry one.
+// Started records the received DataAddress on the flow (SourceDataAddress), invokes the started handler
+// (WithStartedProcessor), transitions the flow to STARTED and persists it. A duplicate message for a STARTED flow is
+// acknowledged without invoking the handler.
 func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFlowStartedNotificationMessage) (*DataFlowStatusMessage, error) {
 	if err := message.Validate(); err != nil {
 		return nil, err
@@ -193,10 +195,7 @@ func (dsdk *DataPlaneSDK) Started(ctx context.Context, id string, message DataFl
 		if !flow.Consumer {
 			return fmt.Errorf("%w: started is only valid for consumer data flows", ErrInvalidInput)
 		}
-		switch {
-		case flow.IsPull() && message.DataAddress == nil:
-			return fmt.Errorf("%w: a started message for a pull transfer must contain a data address", ErrInvalidInput)
-		case flow.IsPush() && message.DataAddress != nil:
+		if flow.IsPush() && message.DataAddress != nil {
 			return fmt.Errorf("%w: a started message for a push transfer must not contain a data address", ErrInvalidInput)
 		}
 
@@ -553,8 +552,9 @@ func WithStartProcessor(processor DataFlowProcessor) DataPlaneSDKOption {
 }
 
 // WithStartedProcessor sets the handler invoked for /started on the consumer, e.g. to start pulling data or to accept
-// pushed data. For pull transfers the received DataAddress is on the flow (SourceDataAddress) when it runs. An error
-// aborts the operation and leaves the flow unchanged; otherwise the flow transitions to STARTED.
+// pushed data. For pull transfers the received DataAddress is on the flow (SourceDataAddress) when it runs, or nil if
+// the message carried none; a handler that needs it returns an error wrapping ErrInvalidInput, which is answered with
+// 400. An error aborts the operation and leaves the flow unchanged; otherwise the flow transitions to STARTED.
 func WithStartedProcessor(handler DataFlowHandler) DataPlaneSDKOption {
 	return func(sdk *DataPlaneSDK) {
 		sdk.onStarted = handler

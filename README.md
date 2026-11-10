@@ -100,7 +100,8 @@ Processors and handlers may modify the `DataFlow` they receive; the SDK persists
 SDK fills in `messageId` and `dataFlowId`. A handler (`DataFlowHandler`) only returns an error, which aborts the
 operation and leaves the data flow unchanged; the SDK then performs the transition itself. On `/started` the address
 received from the provider (pull) is already on the flow (`SourceDataAddress`) when the handler runs, and the flow
-always ends up STARTED. A re-delivered `/prepare` reaches the processor again with `ProcessorOptions.Duplicate` set;
+always ends up STARTED. The specification makes that address optional, so the SDK accepts a `/started` without one;
+a handler that needs it returns an error wrapping `ErrInvalidInput` (400). A re-delivered `/prepare` reaches the processor again with `ProcessorOptions.Duplicate` set;
 re-delivered started, suspend, terminate and completed messages are acknowledged without invoking the handler.
 
 - **Synchronous or asynchronous.** Report PREPARED or STARTED to complete the transition in the response (200).
@@ -109,9 +110,10 @@ re-delivered started, suspend, terminate and completed messages are acknowledged
   (`.../http-push`, `.../http-pull`); see `DataFlow.IsPush` and `IsPull`.
 - **Data addresses.** In a push transfer, the consumer hands out the address the provider pushes to (prepare response),
   and the provider receives it with `/start`. In a pull transfer, the provider hands out the address the consumer pulls
-  from (start response), and the consumer receives it with `/started`. The SDK enforces these rules (400 otherwise),
-  drops addresses a processor returns where the specification allows none, and stores the addresses on the data flow
-  (`SourceDataAddress`, `DestinationDataAddress`).
+  from (start response), and the consumer receives it with `/started`. The SDK answers 400 to a `/start` or `/started`
+  that carries an address it must not carry and to a push `/start` without one, drops addresses a processor returns
+  where the specification allows none, and stores the addresses on the data flow (`SourceDataAddress`,
+  `DestinationDataAddress`).
 
 ## Control plane callbacks
 
@@ -214,4 +216,5 @@ also start an embedded NATS server.
 go generate ./...           # generates the mocks
 go test ./...               # unit and end-to-end tests
 go test -tags postgres ./... # also the Postgres stores and integration tests; needs Docker (testcontainers)
+go test -tags tck ./internal/tests/tck/... # the Data Plane Signaling TCK; needs Docker (testcontainers)
 ```

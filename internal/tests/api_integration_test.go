@@ -229,11 +229,14 @@ func Test_Started_Duplicate(t *testing.T) {
 }
 
 func Test_Started_DataAddressRules(t *testing.T) {
+	// the data address is optional for pull
 	pull := uuid.NewString()
 	createFlow(t, pull, pullProfile, dsdk.Prepared, true)
 	rr := post(t, "/v1/dataflows/"+pull+"/started", dsdk.DataFlowStartedNotificationMessage{MessageID: uuid.NewString()})
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, dsdk.Started, decodeStatus(t, rr).State)
 
+	// and must be omitted for push
 	push := uuid.NewString()
 	createFlow(t, push, pushProfile, dsdk.Prepared, true)
 	rr = post(t, "/v1/dataflows/"+push+"/started", dsdk.DataFlowStartedNotificationMessage{

@@ -1,7 +1,9 @@
 package dsdk
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,6 +105,22 @@ func Test_Router_AcceptedSetsLocation(t *testing.T) {
 			assert.Equal(t, http.StatusOK, serve(t, handler, http.MethodGet, rr.Header().Get("Location"), nil).Code)
 		})
 	}
+}
+
+// Test_Router_StartedHandlerRejectsMissingAddress: the SDK accepts a pull /started without a data address, so a
+// handler that needs one rejects it with ErrInvalidInput.
+func Test_Router_StartedHandlerRejectsMissingAddress(t *testing.T) {
+	sdk, store := newTestSDK(t, WithStartedProcessor(func(_ context.Context, flow *DataFlow) error {
+		if flow.SourceDataAddress == nil {
+			return fmt.Errorf("%w: no data address", ErrInvalidInput)
+		}
+		return nil
+	}))
+	store.put(consumerFlow("flow", pullProfile, Prepared))
+
+	rr := serve(t, NewHandler(sdk), http.MethodPost, "/v1/dataflows/flow/started", `{"messageId": "m"}`)
+	assert.Equal(t, http.StatusBadRequest, rr.Code, rr.Body.String())
+	assert.Equal(t, Prepared, store.get(t, "flow").State)
 }
 
 func Test_Router_Errors(t *testing.T) {

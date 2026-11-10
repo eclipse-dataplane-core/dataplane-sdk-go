@@ -15,6 +15,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -76,8 +77,12 @@ func (d *ConsumerDataPlane) prepareProcessor(_ context.Context,
 	return &dsdk.DataFlowStatusMessage{State: dsdk.Prepared}, nil
 }
 
-// startedProcessor runs on /started: the provider's DataAddress is on the flow as its source address.
+// startedProcessor runs on /started: the provider's DataAddress is on the flow as its source address. The
+// specification makes it optional, but this data plane cannot pull without it.
 func (d *ConsumerDataPlane) startedProcessor(_ context.Context, flow *dsdk.DataFlow) error {
+	if flow.SourceDataAddress == nil {
+		return fmt.Errorf("%w: the started message contains no data address", dsdk.ErrInvalidInput)
+	}
 	endpoint := flow.SourceDataAddress.Endpoint
 	token, found := parseToken(natsservices.TokenKey, flow.SourceDataAddress)
 	if !found {

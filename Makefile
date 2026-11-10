@@ -1,4 +1,4 @@
-.PHONY: all test test-postgres clean mock lint build help
+.PHONY: all test test-postgres test-tck clean mock lint build help
 
 # Go parameters
 GOCMD=go
@@ -27,6 +27,9 @@ test: ## Run tests without postgres
 
 test-postgres: ## Run all tests including postgres
 	$(GOTEST) -v ./... -tags postgres
+
+test-tck: ## Run the Data Plane Signaling TCK against the SDK (needs Docker)
+	$(GOTEST) -v ./internal/tests/tck/... -tags tck
 
 test-coverage: ## Run tests with coverage
 	$(GOTEST) -v -coverprofile=coverage.out ./...
